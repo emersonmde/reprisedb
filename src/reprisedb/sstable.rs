@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
+
 
 use crate::reprisedb::value::Value;
 
@@ -28,6 +29,21 @@ impl SSTable {
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
-        todo!("Implement SSTable::get");
+        let file = File::open(&self.filename).unwrap();
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let row = line.expect("Error reading from SSTable");
+            let mut kv_pair = row.split('\t');
+            if let Some(sstable_key) = kv_pair.next() {
+                todo!("Need to check Value type");
+                if sstable_key == key {
+                    let value = Value::String(String::from(kv_pair.next()?));
+                    return Some(value);
+                }
+            }
+        }
+
+        None
     }
 }

@@ -54,13 +54,18 @@ impl Database {
         }
     }
 
-    pub fn get(&self, key: &str) -> Option<&Value> {
+    pub fn get(&self, key: &str) -> Option<Value> {
         let value = self.memtable.get(key);
         if value.is_some() {
-            return value;
+            return Some(value.unwrap().clone());
         }
 
-        // TODO: implement get for sstables
+        for sstable in self.sstables.iter() {
+            let value = sstable.get(key);
+            if value.is_some() {
+                return value;
+            }
+        }
 
         None
     }
