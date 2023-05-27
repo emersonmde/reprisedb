@@ -1,17 +1,26 @@
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
-use crate::reprisedb::memtable::MemTable;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use rand::Rng;
+use uuid::Uuid;
+
 use value::Value;
+
+use crate::reprisedb::memtable::MemTable;
 
 mod sstable;
 mod memtable;
 pub mod value;
 
+const MEMTABLE_SIZE_TARGET: usize = 2;
+
 #[derive(Debug)]
 pub struct Database {
-    memtable: MemTable,
-    sstables: Vec<sstable::SSTable>,
-    sstable_dir: String,
+    pub memtable: MemTable,
+    pub sstables: Vec<sstable::SSTable>,
+    pub sstable_dir: String,
 }
 
 impl Database {
@@ -24,16 +33,6 @@ impl Database {
         let sstables = Vec::new();
         let memtable = MemTable::new();
 
-        // let sstables = std::fs::read_dir(path)
-        //     .unwrap()
-        //     .map(|entry| {
-        //         let entry = entry.unwrap();
-        //         let path = entry.path();
-        //         let filename = path.to_str().unwrap().to_string();
-        //         sstable::SSTable::load(filename).unwrap()
-        //     })
-        //     .collect();
-
         Ok(Database {
             memtable, sstables, sstable_dir: String::from(sstable_dir)
         })
@@ -41,10 +40,31 @@ impl Database {
 
     pub fn put(&mut self, key: String, value: Value) {
         self.memtable.put(key, value);
+        if self.memtable.size() > MEMTABLE_SIZE_TARGET {
+            self.flush_memtable();
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.memtable.get(key)
+    }
+
+    fn flush_memtable(&mut self) -> std::io::Result<()> {
+        let now = SystemTime::now();
+        let since_the_epoch = now
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
+        let filename = format!("{}_{}", since_the_epoch.as_millis(), Uuid::new_v4());
+        let path_str = format!("{}/{}", self.sstable_dir, filename);
+        let path = Path::new(&path_str);
+
+        let mut file = File::create(&path)?;
+        for (key, value) in self.memtable.iter() {
+            writeln!(file, "{}\t{}", key, value)?;
+        }
+
+        self.memtable.clear();
+        Ok(())
     }
 }
 
