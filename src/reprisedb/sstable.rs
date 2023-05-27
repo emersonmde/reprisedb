@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use crate::reprisedb::Value;
+use crate::reprisedb::value::Value;
 
 #[derive(Debug, Clone)]
 pub struct SSTable {
