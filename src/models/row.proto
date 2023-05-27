@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+message Value {
+  oneof kind {
+    int64 int = 1;
+    double float = 2;
+    string str = 3;
+  }
+}
+
+message Row {
+  string key = 1;
+  Value value = 2;
+}
