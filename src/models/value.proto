@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+message Value {
+  oneof kind {
+    int64 int = 1;
+    double float = 2;
+    string str = 3;
+    string bytes = 4;
+  }
+}
