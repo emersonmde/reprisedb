@@ -1,6 +1,9 @@
+use std::fs;
 use std::fs::File;
+use std::io;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::Rng;
@@ -25,12 +28,18 @@ pub struct Database {
 
 impl Database {
     pub fn new(sstable_dir: &str) -> std::io::Result<Self> {
-        let path = Path::new(sstable_dir);
-        if !path.exists() {
-            std::fs::create_dir(path)?;
+        let sstable_path = Path::new(sstable_dir);
+        if !sstable_path.exists() {
+            std::fs::create_dir(sstable_path)?;
         }
 
-        let sstables = Vec::new();
+        let mut sstables = Vec::new();
+        for path in Database::get_files_by_modified_date(sstable_dir)? {
+            let os_path_str = path.into_os_string();
+            let path_str = os_path_str.to_str().unwrap();
+            sstables.push(sstable::SSTable::load(path_str)?);
+        }
+
         let memtable = MemTable::new();
 
         Ok(Database {
@@ -46,7 +55,13 @@ impl Database {
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.memtable.get(key)
+        let value = self.memtable.get(key);
+        if value.is_some() {
+            return value;
+        }
+
+
+        None
     }
 
     fn flush_memtable(&mut self) -> std::io::Result<()> {
@@ -54,17 +69,34 @@ impl Database {
         let since_the_epoch = now
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
-        let filename = format!("{}_{}", since_the_epoch.as_millis(), Uuid::new_v4());
+        let filename = format!("{}_{}", since_the_epoch.as_secs(), Uuid::new_v4());
         let path_str = format!("{}/{}", self.sstable_dir, filename);
-        let path = Path::new(&path_str);
-
-        let mut file = File::create(&path)?;
-        for (key, value) in self.memtable.iter() {
-            writeln!(file, "{}\t{}", key, value)?;
-        }
+        let sstable = sstable::SSTable::new(&path_str, &self.memtable.snapshot())?;
+        self.sstables.push(sstable);
 
         self.memtable.clear();
         Ok(())
+    }
+
+    fn get_sstable_files(&self) -> io::Result<Vec<PathBuf>> {
+        Database::get_files_by_modified_date(&self.sstable_dir)
+    }
+
+    fn get_files_by_modified_date(path: &str) -> io::Result<Vec<PathBuf>> {
+        // Read the directory
+        let mut entries: Vec<_> = fs::read_dir(path)?
+            .map(|res| {
+                res.map(|e| {
+                    let path = e.path();
+                    let metadata = fs::metadata(&path).unwrap();
+                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    (path, modified)
+                })
+            })
+            .collect::<Result<_, io::Error>>()?;
+
+        entries.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        Ok(entries.into_iter().map(|(path, _)| path).collect())
     }
 }
 

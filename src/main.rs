@@ -6,6 +6,7 @@ mod reprisedb;
 fn main() {
     println!("Hello, world!");
     let mut db = Database::new("sstable").expect("Failed to create database");
+    println!("db {:?}", db);
     db.put("int".to_string(), Value::Int(44));
     println!("size {:?}", db.memtable.size());
     db.put("float".to_string(), Value::Float(33.33));

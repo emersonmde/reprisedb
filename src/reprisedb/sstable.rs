@@ -10,8 +10,8 @@ pub struct SSTable {
 }
 
 impl SSTable {
-    pub fn new(filename: String, snapshot: &BTreeMap<String, Value>) -> std::io::Result<Self> {
-        let file = File::create(&filename)?;
+    pub fn new(filename: &str, snapshot: &BTreeMap<String, Value>) -> std::io::Result<Self> {
+        let file = File::create(filename)?;
         let mut writer = BufWriter::new(file);
 
         // For simplicity, we'll just write the data as text
@@ -20,11 +20,11 @@ impl SSTable {
             writeln!(&mut writer, "{}: {:?}", key, value)?;
         }
 
-        Ok(SSTable { filename })
+        Ok(SSTable { filename: String::from(filename) })
     }
 
-    pub fn load(filename: String) -> std::io::Result<Self> {
-        Ok(SSTable { filename })
+    pub fn load(filename: &str) -> std::io::Result<Self> {
+        Ok(SSTable { filename: String::from(filename) })
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {

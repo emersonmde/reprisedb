@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::reprisedb::value::Value;
 
 #[derive(Debug, Clone)]
-pub struct MemTable(BTreeMap<String, Value>);
+pub struct MemTable(pub(crate) BTreeMap<String, Value>);
 
 impl MemTable {
     pub fn new() -> Self {
@@ -32,6 +32,10 @@ impl MemTable {
 
     pub fn clear(&mut self) {
         self.0.clear();
+    }
+
+    pub fn snapshot(&self) -> &BTreeMap<String, Value> {
+        &self.0
     }
 }
 
