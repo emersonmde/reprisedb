@@ -30,15 +30,13 @@ impl Database {
         }
 
         let mut sstables = Vec::new();
-        for path in Self::get_files_by_modified_date(sstable_dir)? {
-            let os_path_str = path.into_os_string();
+        for path in Self::get_files_by_modified_date(sstable_dir)?.iter().rev() {
+            let os_path_str = path.clone().into_os_string();
             let path_str = os_path_str.into_string().map_err(|e| {
                 io::Error::new(io::ErrorKind::InvalidData, format!("Invalid file path: {:?}", e))
             })?;
             sstables.push(sstable::SSTable::new(&path_str)?);
         }
-        // Sort the sstables by modified date, oldest to newest
-        sstables.reverse();
 
         let memtable = MemTable::new();
 
