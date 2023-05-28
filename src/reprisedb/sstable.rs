@@ -16,7 +16,11 @@ pub struct SSTable {
 }
 
 impl SSTable {
-    pub fn new(filename: &str, snapshot: &BTreeMap<String, value::Kind>) -> std::io::Result<Self> {
+    pub fn new(filename: &str) -> std::io::Result<Self> {
+        Ok(SSTable { filename: String::from(filename) })
+    }
+
+    pub fn create(filename: &str, snapshot: &BTreeMap<String, value::Kind>) -> std::io::Result<Self> {
         let file = File::create(filename)?;
         let mut writer = BufWriter::new(file);
 
@@ -35,10 +39,6 @@ impl SSTable {
             writer.write_all(&bytes)?;
         }
 
-        Ok(SSTable { filename: String::from(filename) })
-    }
-
-    pub fn load(filename: &str) -> std::io::Result<Self> {
         Ok(SSTable { filename: String::from(filename) })
     }
 
@@ -124,10 +124,4 @@ impl Iterator for SSTableIter {
             Err(e) => Some(Err(e)),
         }
     }
-}
-
-impl SSTable {
-    // ... existing methods ...
-
-
 }

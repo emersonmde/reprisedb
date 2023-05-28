@@ -52,7 +52,7 @@ impl Database {
         for path in Database::get_files_by_modified_date(sstable_dir)? {
             let os_path_str = path.into_os_string();
             let path_str = os_path_str.to_str().unwrap();
-            sstables.push(sstable::SSTable::load(path_str)?);
+            sstables.push(sstable::SSTable::new(path_str)?);
         }
 
         let memtable = MemTable::new();
@@ -94,7 +94,7 @@ impl Database {
             .expect("Time went backwards");
         let filename = format!("{}_{}", since_the_epoch.as_secs(), Uuid::new_v4());
         let path_str = format!("{}/{}", self.sstable_dir, filename);
-        let sstable = sstable::SSTable::new(&path_str, &self.memtable.snapshot())?;
+        let sstable = sstable::SSTable::create(&path_str, &self.memtable.snapshot())?;
         self.sstables.push(sstable);
 
         self.memtable.clear();
