@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::io;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use prost::Message;
+use uuid::Uuid;
 
 use crate::models;
 use crate::models::value;
@@ -38,6 +41,7 @@ impl SSTable {
     pub fn load(filename: &str) -> std::io::Result<Self> {
         Ok(SSTable { filename: String::from(filename) })
     }
+
     pub fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
         let file = File::open(&self.filename)?;
         let mut reader = BufReader::new(file);
@@ -73,4 +77,57 @@ impl SSTable {
 
         Ok(None)
     }
+
+    pub fn iter(&self) -> io::Result<SSTableIter> {
+        let file = File::open(&self.filename)?;
+        let reader = BufReader::new(file);
+        Ok(SSTableIter { reader, buf: Vec::new() })
+    }
+}
+
+
+pub struct SSTableIter {
+    reader: BufReader<File>,
+    buf: Vec<u8>,
+}
+
+impl Iterator for SSTableIter {
+    type Item = io::Result<(String, models::value::Kind)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.buf.clear();
+
+        // First, read the length of the protobuf message (assuming it was written as a u64).
+        let mut len_buf = [0u8; 8];
+        match self.reader.read_exact(&mut len_buf) {
+            Ok(()) => {
+                let len = u64::from_be_bytes(len_buf);
+
+                // Then read that number of bytes into the buffer.
+                self.buf.resize(len as usize, 0);
+                match self.reader.read_exact(&mut self.buf) {
+                    Ok(()) => {
+                        let row: models::Row = match models::Row::decode(&*self.buf) {
+                            Ok(row) => row,
+                            Err(e) => return Some(Err(io::Error::new(io::ErrorKind::Other, e))),
+                        };
+
+                        Some(Ok((row.key, row.value.map(|v| v.kind.unwrap()).unwrap())))
+                    }
+                    Err(e) => Some(Err(e)),
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // We've reached the end of the file.
+                None
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+impl SSTable {
+    // ... existing methods ...
+
+
 }

@@ -1,40 +1,44 @@
 use std::collections::BTreeMap;
-use crate::models::{Value, value};
+use crate::models::{Value, value, ValueKindSize};
 
 #[derive(Debug, Clone)]
-pub struct MemTable(pub(crate) BTreeMap<String, value::Kind>);
+pub struct MemTable {
+    memtable: BTreeMap<String, value::Kind>,
+    size: usize,
+}
 
 impl MemTable {
     pub fn new() -> Self {
-        MemTable(BTreeMap::new())
+        MemTable { memtable: BTreeMap::new(), size: 0 }
     }
 
     pub fn put(&mut self, key: String, value: value::Kind) {
-        self.0.insert(key, value);
+        self.size += key.len() + value.size();
+        self.memtable.insert(key, value);
     }
 
     pub fn get(&self, key: &str) -> Option<&value::Kind> {
-        self.0.get(key)
+        self.memtable.get(key)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.memtable.is_empty()
     }
 
     pub fn size(&self) -> usize {
-        self.0.len()
+        self.size
     }
 
     pub fn iter(&self) -> std::collections::btree_map::Iter<String, value::Kind> {
-        self.0.iter()
+        self.memtable.iter()
     }
 
     pub fn clear(&mut self) {
-        self.0.clear();
+        self.memtable.clear();
     }
 
     pub fn snapshot(&self) -> &BTreeMap<String, value::Kind> {
-        &self.0
+        &self.memtable
     }
 }
 
@@ -50,7 +54,7 @@ mod tests {
         assert_eq!(memtable.size(), 0);
         memtable.put("foo".to_string(), value::Kind::Int(42));
         assert!(!memtable.is_empty());
-        assert_eq!(memtable.size(), 1);
+        assert_eq!(memtable.size(), 3 + 8); // 3 for "foo", 8 for the i64
         assert_eq!(memtable.get("foo"), Some(&value::Kind::Int(42)));
         assert_eq!(memtable.get("bar"), None);
     }

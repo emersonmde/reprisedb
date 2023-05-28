@@ -15,7 +15,7 @@ use crate::reprisedb::memtable::MemTable;
 mod sstable;
 mod memtable;
 
-const MEMTABLE_SIZE_TARGET: usize = 2;
+const MEMTABLE_SIZE_TARGET: usize = 1024 * 4;
 
 #[derive(Debug)]
 pub struct Database {
@@ -25,6 +25,23 @@ pub struct Database {
 }
 
 impl Database {
+    fn get_files_by_modified_date(path: &str) -> io::Result<Vec<PathBuf>> {
+        // Read the directory
+        let mut entries: Vec<_> = fs::read_dir(path)?
+            .map(|res| {
+                res.map(|e| {
+                    let path = e.path();
+                    let metadata = fs::metadata(&path).unwrap();
+                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    (path, modified)
+                })
+            })
+            .collect::<Result<_, io::Error>>()?;
+
+        entries.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        Ok(entries.into_iter().map(|(path, _)| path).collect())
+    }
+
     pub fn new(sstable_dir: &str) -> std::io::Result<Self> {
         let sstable_path = Path::new(sstable_dir);
         if !sstable_path.exists() {
@@ -84,25 +101,30 @@ impl Database {
         Ok(())
     }
 
+    fn compact_sstables(&mut self) -> std::io::Result<()> {
+        todo!("compact_sstables");
+    }
+
     fn get_sstable_files(&self) -> io::Result<Vec<PathBuf>> {
         Database::get_files_by_modified_date(&self.sstable_dir)
     }
 
-    fn get_files_by_modified_date(path: &str) -> io::Result<Vec<PathBuf>> {
-        // Read the directory
-        let mut entries: Vec<_> = fs::read_dir(path)?
-            .map(|res| {
-                res.map(|e| {
-                    let path = e.path();
-                    let metadata = fs::metadata(&path).unwrap();
-                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    (path, modified)
-                })
-            })
-            .collect::<Result<_, io::Error>>()?;
+}
 
-        entries.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        Ok(entries.into_iter().map(|(path, _)| path).collect())
+impl Drop for Database {
+    fn drop(&mut self) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.flush_memtable()));
+
+        match result {
+            Ok(res) => {
+                if let Err(e) = res {
+                    eprintln!("Failed to flush memtable on drop: {}", e);
+                }
+            }
+            Err(_) => {
+                eprintln!("Panic occurred while flushing memtable on drop");
+            }
+        }
     }
 }
 
@@ -125,7 +147,7 @@ mod tests {
                 fs::remove_file(entry.path()).unwrap();
             }
         }
-        std::fs::remove_dir(db.sstable_dir).unwrap();
+        std::fs::remove_dir(&db.sstable_dir).unwrap();
     }
 
     #[test]
