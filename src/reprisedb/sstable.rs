@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io;
+use std::{fs, io};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,18 +12,22 @@ use crate::models::value;
 
 #[derive(Debug, Clone)]
 pub struct SSTable {
-    filename: String,
+    pub filename: String,
+    size: u64
 }
 
 impl SSTable {
     pub fn new(filename: &str) -> std::io::Result<Self> {
-        Ok(SSTable { filename: String::from(filename) })
+        let metadata = fs::metadata(filename)?;
+        Ok(SSTable { filename: String::from(filename), size: metadata.len() })
     }
 
     pub fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> std::io::Result<Self> {
+        println!("dir: {}", dir);
         let filename = Self::get_new_filename(dir);
         let file = File::create(filename.clone())?;
         let mut writer = BufWriter::new(file);
+        let mut size: u64 = 0;
 
         for (key, value) in snapshot {
             let row = models::Row {
@@ -36,11 +40,13 @@ impl SSTable {
 
             // Write the length of the protobuf message as a u64 before the message itself.
             let len = bytes.len() as u64;
-            writer.write_all(&len.to_be_bytes())?;
+            let len_bytes = len.to_be_bytes();
+            size += len + len_bytes.len() as u64;
+            writer.write_all(&len_bytes)?;
             writer.write_all(&bytes)?;
         }
 
-        Ok(SSTable { filename: String::from(filename) })
+        Ok(SSTable { filename: String::from(filename), size })
     }
 
     pub fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
@@ -79,10 +85,7 @@ impl SSTable {
         Ok(None)
     }
 
-
-    /// Merges two SSTables returning the filename of the combined SSTable
-    #[allow(dead_code)]
-    pub fn merge(&self, sstable: SSTable, dir: &str) -> io::Result<String> {
+    pub fn merge(&self, sstable: &SSTable, dir: &str) -> io::Result<SSTable> {
         let mut iter1 = match self.iter() {
             Ok(iter) => iter,
             Err(e) => return Err(e),
@@ -130,8 +133,8 @@ impl SSTable {
 
         writer.flush()?;
 
-        // TODO: Update SSTables from Database after merge
-        Ok(filename)
+        let sstable = SSTable::new(filename.as_str())?;
+        Ok(sstable)
     }
 
 
@@ -209,4 +212,42 @@ impl Iterator for SSTableIter {
             Err(e) => Some(Err(e)),
         }
     }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use rand::Rng;
+    use super::*;
+
+    #[test]
+    fn test_create() {
+        let (sstable_path, sstable) = setup();
+        assert!(Path::new(&sstable.filename).exists());
+        teardown(sstable_path);
+    }
+
+    fn setup() -> (String, SSTable) {
+        let sstable_dir = create_test_dir();
+        let memtable: BTreeMap<String, value::Kind> = BTreeMap::new();
+        let sstable = SSTable::create(&sstable_dir, &memtable).unwrap();
+        (sstable_dir, sstable)
+    }
+
+    fn teardown(sstable_path: String) {
+        fs::remove_dir_all(sstable_path).unwrap();
+    }
+
+    fn create_test_dir() -> String {
+        let mut rng = rand::thread_rng();
+        let i: u8 = rng.gen();
+        let path = format!("/tmp/reprisedb_sstable_testdir{}", i);
+        let sstable_path = Path::new(&path);
+        if !sstable_path.exists() {
+            std::fs::create_dir(sstable_path).unwrap();
+        }
+        path
+    }
+
 }

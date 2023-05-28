@@ -1,11 +1,14 @@
-use reprisedb::Database;
+use std::fs;
 use crate::models::value;
+use crate::reprisedb::Database;
 
-mod reprisedb;
 mod models;
+mod reprisedb;
 
-fn main() {
+
+fn main() -> std::io::Result<()> {
     let mut db = Database::new("sstable").expect("Failed to create database");
+    println!("sstables: {:?}", db.sstables.read());
     println!("size: {}\n", db.memtable.size());
     println!("put key1");
     db.put("key1".to_string(), value::Kind::Str("value1".to_string())).unwrap();
@@ -21,5 +24,11 @@ fn main() {
     db.put("key3".to_string(), value::Kind::Str("value3".to_string())).unwrap();
     println!("key3: {:?}\n", db.get("key3"));
     println!("size: {}\n", db.memtable.size());
+
+    db.flush_memtable().unwrap();
+    println!("Finshed flushing memtables");
+    db.compact_sstables().unwrap();
+    println!("Finshed compacting sstables");
+    Ok(())
 }
 
