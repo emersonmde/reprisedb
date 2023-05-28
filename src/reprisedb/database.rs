@@ -2,10 +2,10 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use parking_lot::RwLock;
-use std::sync::{Arc};
+use std::sync::Arc;
 use std::time::SystemTime;
 
+use parking_lot::RwLock;
 use rand::Rng;
 
 use crate::models::value;
@@ -22,7 +22,6 @@ pub struct Database {
 }
 
 impl Database {
-
     pub fn new(sstable_dir: &str) -> std::io::Result<Self> {
         let sstable_path = Path::new(sstable_dir);
         if !sstable_path.exists() {
@@ -70,7 +69,7 @@ impl Database {
     }
 
     pub fn flush_memtable(&mut self) -> std::io::Result<()> {
-        if (self.memtable.is_empty()) {
+        if self.memtable.is_empty() {
             return Ok(());
         }
         let sstable = sstable::SSTable::create(&self.sstable_dir, &self.memtable.snapshot())?;
@@ -131,10 +130,6 @@ impl Database {
         }
 
         Ok(())
-    }
-
-    fn get_sstable_files(&self) -> io::Result<Vec<PathBuf>> {
-        Self::get_files_by_modified_date(self.sstable_dir.as_str())
     }
 
     fn get_files_by_modified_date(path: &str) -> io::Result<Vec<PathBuf>> {
