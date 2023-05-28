@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use crate::models::{Value, value, ValueKindSize};
+use crate::models::{value, ValueKindSize};
 
 #[derive(Debug, Clone)]
 pub struct MemTable {
@@ -27,10 +27,6 @@ impl MemTable {
 
     pub fn size(&self) -> usize {
         self.size
-    }
-
-    pub fn iter(&self) -> std::collections::btree_map::Iter<String, value::Kind> {
-        self.memtable.iter()
     }
 
     pub fn clear(&mut self) {

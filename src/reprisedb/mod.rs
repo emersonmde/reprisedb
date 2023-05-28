@@ -1,13 +1,10 @@
 use std::fs;
-use std::fs::File;
 use std::io;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use rand::Rng;
-use uuid::Uuid;
 
 use crate::models::value;
 use crate::reprisedb::memtable::MemTable;
@@ -49,7 +46,7 @@ impl Database {
         }
 
         let mut sstables = Vec::new();
-        for path in Database::get_files_by_modified_date(sstable_dir)? {
+        for path in Self::get_files_by_modified_date(sstable_dir)? {
             let os_path_str = path.into_os_string();
             let path_str = os_path_str.to_str().unwrap();
             sstables.push(sstable::SSTable::new(path_str)?);
@@ -64,11 +61,12 @@ impl Database {
         })
     }
 
-    pub fn put(&mut self, key: String, value: value::Kind) {
+    pub fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
         self.memtable.put(key, value);
         if self.memtable.size() > MEMTABLE_SIZE_TARGET {
-            self.flush_memtable();
+            self.flush_memtable()?;
         }
+        Ok(())
     }
 
     pub fn get(&self, key: &str) -> std::io::Result<Option<value::Kind>> {
@@ -88,27 +86,17 @@ impl Database {
     }
 
     fn flush_memtable(&mut self) -> std::io::Result<()> {
-        let now = SystemTime::now();
-        let since_the_epoch = now
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
-        let filename = format!("{}_{}", since_the_epoch.as_secs(), Uuid::new_v4());
-        let path_str = format!("{}/{}", self.sstable_dir, filename);
-        let sstable = sstable::SSTable::create(&path_str, &self.memtable.snapshot())?;
+        let sstable = sstable::SSTable::create(&self.sstable_dir, &self.memtable.snapshot())?;
         self.sstables.push(sstable);
 
         self.memtable.clear();
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn compact_sstables(&mut self) -> std::io::Result<()> {
         todo!("compact_sstables");
     }
-
-    fn get_sstable_files(&self) -> io::Result<Vec<PathBuf>> {
-        Database::get_files_by_modified_date(&self.sstable_dir)
-    }
-
 }
 
 impl Drop for Database {
@@ -169,9 +157,9 @@ mod tests {
         let int_value = value::Kind::Int(44);
         let float_value = value::Kind::Float(12.2);
         let string_value = value::Kind::Str("Test".to_string());
-        db.put("int".to_string(), int_value.clone());
-        db.put("float".to_string(), float_value.clone());
-        db.put("string".to_string(), string_value.clone());
+        db.put("int".to_string(), int_value.clone()).unwrap();
+        db.put("float".to_string(), float_value.clone()).unwrap();
+        db.put("string".to_string(), string_value.clone()).unwrap();
         assert_eq!(&db.get("int").unwrap().unwrap(), &int_value);
         assert_eq!(&db.get("float").unwrap().unwrap(), &float_value);
         assert_eq!(&db.get("string").unwrap().unwrap(), &string_value);
