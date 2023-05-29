@@ -227,7 +227,7 @@ impl Database {
         if memtable.is_empty() {
             return Ok(());
         }
-        let sstable = sstable::SSTable::create(&self.sstable_dir, &memtable.snapshot()).await?;
+        let sstable = sstable::SSTable::create(&self.sstable_dir, &memtable.get_memtable()).await?;
         self.sstables.write().await.push(sstable);
         memtable.clear();
         Ok(())

@@ -24,6 +24,7 @@ use crate::models::value;
 #[derive(Debug, Clone)]
 pub struct SSTable {
     pub(crate) path: PathBuf,
+    #[allow(dead_code)]
     size: u64,
 }
 
