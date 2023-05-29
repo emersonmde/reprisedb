@@ -30,21 +30,24 @@ const MEMTABLE_SIZE_TARGET: usize = 1024 * 1024;
 /// # Example
 ///
 /// ```
-/// use reprisedb::Database;
+/// use reprisedb::reprisedb::Database;
+/// use reprisedb::models::value::Kind;
+/// use std::fs;
 ///
 /// #[tokio::main]
 /// async fn main() {
 ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
 ///
-///     db.put("my_key".into(), "my_value".into()).await.expect("Put operation failed");
+///     db.put("my_key".to_string(), Kind::Str("my_value".to_string())).await.expect("Put operation failed");
 ///     let value = db.get("my_key").await.expect("Get operation failed");
 ///
-///     assert_eq!(value, Some("my_value".into()));
+///     assert_eq!(value, Some(Kind::Str("my_value".to_string())));
 ///
 ///     db.shutdown().await;
+///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
@@ -71,12 +74,15 @@ impl Database {
     /// # Examples
     ///
     /// ```
-    /// use reprisedb::Database;
+    /// use reprisedb::reprisedb::Database;
+    /// use std::fs;
     ///
-    /// fn main() {
-    ///     let db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
     ///     // ...
     ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
     /// }
     /// ```
     pub fn new(sstable_dir: &str) -> std::io::Result<Self> {
@@ -121,14 +127,16 @@ impl Database {
     /// # Examples
     ///
     /// ```no_run
-    /// use reprisedb::Database;
+    /// use reprisedb::reprisedb::Database;
     /// use reprisedb::models::value::Kind;
+    /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
     ///     db.put("my_key".to_string(), Kind::Int(42)).await.expect("Failed to insert key-value pair");
-    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    ///     db.shutdown().await;
+    ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
     /// }
     /// ```
     pub async fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
@@ -162,17 +170,19 @@ impl Database {
     /// # Examples
     ///
     /// ```no_run
-    /// use reprisedb::Database;
+    /// use reprisedb::reprisedb::Database;
+    /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
     ///     match db.get("my_key").await {
     ///         Ok(Some(value)) => println!("Retrieved value: {:?}", value),
     ///         Ok(None) => println!("Key not found"),
     ///         Err(e) => eprintln!("Failed to retrieve key: {}", e),
     ///     }
-    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    ///     db.shutdown().await;
+    ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
     /// }
     /// ```
     pub async fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
@@ -208,18 +218,20 @@ impl Database {
     /// # Examples
     ///
     /// ```no_run
-    /// use reprisedb::Database;
+    /// use reprisedb::reprisedb::Database;
     /// use reprisedb::models::value::Kind;
+    /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
-    ///     db.put("key".to_string(), Kind::String("value".to_string())).await.expect("Failed to put data");
+    ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
     ///     match db.flush_memtable().await {
     ///         Ok(_) => println!("Memtable flushed successfully"),
     ///         Err(e) => eprintln!("Failed to flush memtable: {}", e),
     ///     }
-    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    ///     db.shutdown().await;
+    ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
     /// }
     /// ```
     pub async fn flush_memtable(&mut self) -> std::io::Result<()> {
@@ -254,7 +266,8 @@ impl Database {
     /// # Examples
     ///
     /// ```no_run
-    /// use reprisedb::Database;
+    /// use reprisedb::reprisedb::Database;
+    /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
@@ -263,7 +276,8 @@ impl Database {
     ///         Ok(_) => println!("Compaction completed successfully"),
     ///         Err(e) => eprintln!("Failed to compact SSTables: {}", e),
     ///     }
-    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    ///     db.shutdown().await;
+    ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
     /// }
     /// ```
     pub async fn compact_sstables(&mut self) -> io::Result<()> {
@@ -330,14 +344,15 @@ impl Database {
     /// # Examples
     ///
     /// ```no_run
-    /// use reprisedb::Database;
+    /// use reprisedb::reprisedb::Database;
     /// use reprisedb::models::value::Kind;
+    /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
-    ///     db.put("key".to_string(), Kind::String("value".to_string())).await.expect("Failed to put data");
-    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
+    ///     db.shutdown().await;
     /// }
     /// ```
     pub async fn shutdown(&mut self) {
