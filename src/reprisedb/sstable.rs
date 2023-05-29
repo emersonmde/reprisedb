@@ -19,9 +19,8 @@ use crate::models::value;
 /// storage format with each variable sized row prefixed by a u64 length.
 ///
 /// An SSTable contains the following fields:
-/// * `filename`: The name of the file where the SSTable is stored.
+/// * `path`: The name of the file where the SSTable is stored.
 /// * `size`: The size of the SSTable file.
-/// * `file`: A thread-safe reference to the file where the SSTable is stored.
 #[derive(Debug, Clone)]
 pub struct SSTable {
     pub(crate) path: PathBuf,

@@ -1,33 +1,49 @@
 # RepriseDB
 
-RepriseDB is a disk-persistent key-value store, designed to facilitate rapid data access. It employs a Log-Structured
-Merge (LSM) Tree-based architecture for effective data handling, optimizing the interplay between in-memory and on-disk
-data.
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Overview
+RepriseDB is an in-development, disk-persistent key-value store written in Rust. It's designed with an LSM Tree-based architecture, optimizing the interplay between in-memory and on-disk data. This project is still in the early stages of development and is not recommended for production use.
 
-RepriseDB's core operation relies on two data structures: `MemTable`, an in-memory B-Tree map, and `SSTable`, a
-disk-resident Sorted String Table. The `MemTable` temporarily stores data prior to its transition to an `SSTable` once a
-specified size limit is reached. `SSTable`'s key-value pairs are encoded using Protocol Buffers and sorted to enable
-binary search for key lookups in the future.
+## Design
 
-## LSM Tree Compaction and Merge Strategy
+RepriseDB's operation relies on two primary data structures:
 
-RepriseDB's LSM Tree-based compaction and merge strategy is central to its performance. As the number of `SSTable`s
-increases, key lookup may necessitate scanning multiple tables. To prevent inefficiency, RepriseDB compacts `SSTable`s,
-merging them into a single table.
+- `MemTable`: an in-memory B-Tree map, providing rapid access and mutable operations. It temporarily stores data before its transition to an `SSTable` when it reaches a specific size limit.
 
-This process, managed by the `compact_sstables` method, merges the two most recent `SSTable`s into one. In the event of
-key collisions, the newer value is retained, implementing a "last write wins" approach. Should a compaction error occur,
-RepriseDB reverts to the pre-compaction state, ensuring data consistency and integrity.
+- `SSTable` (Sorted String Table): a disk-resident structure which stores key-value pairs persistently. These pairs are encoded using Protocol Buffers and sorted to enable efficient binary search during key lookups.
 
-## Key Components
+## LSM Tree Compaction
 
-- **database.rs**: Functions as the main RepriseDB interface. Handles data reading and writing operations and initiates
-  compaction when required.
-- **sstable.rs**: Establishes the `SSTable` structure and operations, and includes an iterator for key-value pair
-  traversal.
+RepriseDB handles LSM Tree compaction using a merge strategy. When the number of `SSTable`s grows, a compaction process is initiated to prevent inefficiencies during key lookups. This process, managed by the `compact_sstables` method, merges the two most recent `SSTable`s into one, with a "last write wins" strategy for key collisions.
+
+In case of a compaction error, RepriseDB rolls back to the pre-compaction state, ensuring data consistency and integrity.
+
+## Code Overview
+
+- **database.rs**: The main interface of RepriseDB, manages data read/write operations and initiates compaction when required.
+- **sstable.rs**: Defines the `SSTable` structure and related operations, and includes an iterator for key-value pair traversal.
+
+## Getting Started
+
+RepriseDB is still in development. For early experimentation, add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+reprisedb = { git = "https://github.com/matthew-emerson/reprisedb.git", branch = "main" }
+```
+
+## Documentation
+
+Additional documentation for methods and structures is in progress.
+
+## Contributing
+
+Feedback and contributions are very welcome at this early stage of development. Please feel free to submit issues or open pull requests.
 
 ## License
 
-RepriseDB is distributed under the MIT license.
+This project is licensed under the [MIT license](LICENSE).
+
+## Maintainer
+
+RepriseDB is developed and maintained by [Matthew Emerson](https://github.com/emersonmde).

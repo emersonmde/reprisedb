@@ -14,6 +14,36 @@ use crate::reprisedb::sstable;
 
 const MEMTABLE_SIZE_TARGET: usize = 1024 * 4;
 
+/// A simple LSM (Log-Structured Merge-tree) database.
+///
+/// The `Database` struct represents a database, including a memory table (memtable)
+/// and a list of sorted string tables (SSTables). The database supports common operations
+/// such as `put`, `get`, `flush_memtable`, `compact_sstables`, and `shutdown`.
+///
+/// The memtable is a BTreeMap that holds data in memory, while the SSTables are used
+/// to persist data on the disk. The SSTables are stored in the directory specified
+/// during the database initialization (`sstable_dir`).
+///
+/// `Database` uses `RwLock` to synchronize access to the memtable and the SSTables,
+/// ensuring thread-safety for concurrent operations.
+///
+/// # Example
+///
+/// ```
+/// use reprisedb::Database;
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+///
+///     db.put("my_key".into(), "my_value".into()).await.expect("Put operation failed");
+///     let value = db.get("my_key").await.expect("Get operation failed");
+///
+///     assert_eq!(value, Some("my_value".into()));
+///
+///     db.shutdown().await;
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
@@ -22,6 +52,33 @@ pub struct Database {
 }
 
 impl Database {
+    /// Creates a new instance of `Database` with the given directory to store SSTables.
+    ///
+    /// The database instance includes a memtable and a list of SSTables loaded from the specified directory.
+    /// If the directory doesn't exist, it will be created. Files within the directory are treated as SSTables
+    /// and are loaded during the database initialization.
+    ///
+    /// If the directory contains invalid file paths or any other IO errors occur, the method will return an `Err`.
+    ///
+    /// # Arguments
+    ///
+    /// * `sstable_dir`: A string slice representing the directory path where SSTables will be stored.
+    ///
+    /// # Errors
+    ///
+    /// If this function encounters any form of I/O or other error, an error variant will be returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use reprisedb::Database;
+    ///
+    /// fn main() {
+    ///     let db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     // ...
+    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    /// }
+    /// ```
     pub fn new(sstable_dir: &str) -> std::io::Result<Self> {
         let sstable_path = Path::new(sstable_dir);
         if !sstable_path.exists() {
@@ -46,6 +103,34 @@ impl Database {
         })
     }
 
+    /// Inserts a key-value pair into the database.
+    ///
+    /// This method inserts the given key-value pair into the in-memory `MemTable`. If the size of the `MemTable`
+    /// exceeds the `MEMTABLE_SIZE_TARGET` after the insertion, it automatically triggers the `flush_memtable` method
+    /// to persist the in-memory data to disk in an `SSTable`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - A String that represents the key to be stored in the database.
+    /// * `value` - A `value::Kind` that holds the value to be associated with the key.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an `io::Error` if the `flush_memtable` operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use reprisedb::Database;
+    /// use reprisedb::models::value::Kind;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     db.put("my_key".to_string(), Kind::Int(42)).await.expect("Failed to insert key-value pair");
+    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    /// }
+    /// ```
     pub async fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
         let mut memtable_guard = self.memtable.write().await;
         memtable_guard.put(key, value);
@@ -56,6 +141,40 @@ impl Database {
         Ok(())
     }
 
+    /// Retrieves the value associated with a given key from the database.
+    ///
+    /// This method first checks the in-memory `MemTable` for the requested key. If not found, it iterates
+    /// through the `SSTables` on disk in reverse order (newest first) to find the value associated with the key.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - A string slice that holds the key to retrieve its associated value from the database.
+    ///
+    /// # Return
+    ///
+    /// This function returns a `Result` containing an `Option<value::Kind>`. If the key is found, an `Option::Some`
+    /// variant containing the value is returned. If the key is not found, an `Option::None` variant is returned.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an `io::Error` if reading from the `SSTables` fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use reprisedb::Database;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     match db.get("my_key").await {
+    ///         Ok(Some(value)) => println!("Retrieved value: {:?}", value),
+    ///         Ok(None) => println!("Key not found"),
+    ///         Err(e) => eprintln!("Failed to retrieve key: {}", e),
+    ///     }
+    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    /// }
+    /// ```
     pub async fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
         if let Some(value) = self.memtable.read().await.get(key) {
             return Ok(Some(value.clone()));
@@ -70,6 +189,39 @@ impl Database {
         Ok(None)
     }
 
+    /// Asynchronously flushes the current memtable into an SSTable on disk.
+    ///
+    /// The content of the memtable is moved into a new SSTable which is stored on disk in the directory
+    /// specified at database creation. After the memtable is successfully flushed, it is cleared and ready for new data.
+    ///
+    /// If the memtable is empty, this operation is a no-op and immediately returns `Ok(())`.
+    ///
+    /// # Return
+    ///
+    /// This function returns an `io::Result<()>`. If the flush process completes successfully, an `Ok(())`
+    /// is returned. If an error occurs during the process, an `Err` variant containing the `io::Error` is returned.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an `io::Error` if there's a problem creating the SSTable, such as a filesystem I/O error.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use reprisedb::Database;
+    /// use reprisedb::models::value::Kind;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     db.put("key".to_string(), Kind::String("value".to_string())).await.expect("Failed to put data");
+    ///     match db.flush_memtable().await {
+    ///         Ok(_) => println!("Memtable flushed successfully"),
+    ///         Err(e) => eprintln!("Failed to flush memtable: {}", e),
+    ///     }
+    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    /// }
+    /// ```
     pub async fn flush_memtable(&mut self) -> std::io::Result<()> {
         let mut memtable = self.memtable.write().await;
         if memtable.is_empty() {
@@ -81,6 +233,39 @@ impl Database {
         Ok(())
     }
 
+    /// Initiates compaction of `SSTables` in the database.
+    ///
+    /// This method goes through the list of `SSTables` in reverse order (from newest to oldest), and merges
+    /// the latest `SSTable` with the one just before it. The new merged `SSTable` is then added back to the list,
+    /// and the old `SSTables` are removed.
+    ///
+    /// In case of an error during the merge process, a rollback is performed to restore the state of `SSTables`
+    /// to what it was before the start of the operation.
+    ///
+    /// # Return
+    ///
+    /// This function returns an `io::Result<()>`. If the compaction process completes successfully, an `Ok(())`
+    /// is returned. If an error occurs during the process, an `Err` variant containing the `io::Error` is returned.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an `io::Error` if any I/O operation fails during the process.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use reprisedb::Database;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     match db.compact_sstables().await {
+    ///         Ok(_) => println!("Compaction completed successfully"),
+    ///         Err(e) => eprintln!("Failed to compact SSTables: {}", e),
+    ///     }
+    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    /// }
+    /// ```
     pub async fn compact_sstables(&mut self) -> io::Result<()> {
         let sstables_backup = self.sstables.clone();
 
@@ -134,6 +319,27 @@ impl Database {
         Ok(())
     }
 
+    /// Shuts down the database, ensuring that the current memtable is flushed to disk.
+    ///
+    /// This method should be called prior to the application exiting to ensure that all in-memory data
+    /// is safely written to disk. If the flushing process fails, the error will be printed to the standard error output.
+    ///
+    /// Note that this method does not currently return any status or error information. As a result,
+    /// it is important to ensure that all previous database operations have completed successfully before calling `shutdown`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use reprisedb::Database;
+    /// use reprisedb::models::value::Kind;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     db.put("key".to_string(), Kind::String("value".to_string())).await.expect("Failed to put data");
+    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
+    /// }
+    /// ```
     pub async fn shutdown(&mut self) {
         match self.flush_memtable().await {
             Ok(_) => (),
