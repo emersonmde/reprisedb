@@ -47,7 +47,7 @@ const MEMTABLE_SIZE_TARGET: usize = 1024 * 1024;
 ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
@@ -397,6 +397,16 @@ impl Database {
 //         }
 //     }
 // }
+
+impl Clone for Database {
+    fn clone(&self) -> Self {
+        Database {
+            memtable: Arc::clone(&self.memtable),
+            sstables: Arc::clone(&self.sstables),
+            sstable_dir: self.sstable_dir.clone(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
