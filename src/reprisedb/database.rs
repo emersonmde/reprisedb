@@ -62,7 +62,7 @@ impl Database {
         }
 
         for sstable in self.sstables.read().await.iter().rev() {
-            if let Some(value) = sstable.get(key)? {
+            if let Some(value) = sstable.get(key).await? {
                 return Ok(Some(value));
             }
         }
@@ -106,7 +106,7 @@ impl Database {
 
             let result = {
                 // Merge creates a new SSTable from the two SSTables passed in favoring the latest
-                let merged = latest.merge(&second_latest, &self.sstable_dir)?;
+                let merged = latest.merge(&second_latest, &self.sstable_dir).await?;
 
                 // Remove the old tables, add the new one
                 let mut sstables = self.sstables.write().await;

@@ -1,13 +1,13 @@
+use std::{fs, io};
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::{fs, io};
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::sync::{Arc};
-// TODO: Update to tokio
-use parking_lot::RwLock;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use prost::Message;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::models;
@@ -17,7 +17,7 @@ use crate::models::value;
 pub struct SSTable {
     pub filename: String,
     size: u64,
-    file: Arc<RwLock<File>>
+    file: Arc<RwLock<File>>,
 }
 
 impl SSTable {
@@ -26,7 +26,7 @@ impl SSTable {
         Ok(SSTable {
             filename: String::from(filename),
             size: metadata.len(),
-            file: Arc::new(RwLock::new(File::open(filename)?))
+            file: Arc::new(RwLock::new(File::open(filename)?)),
         })
     }
 
@@ -57,14 +57,12 @@ impl SSTable {
         Ok(SSTable {
             filename: String::from(&filename),
             size,
-            file: Arc::new(RwLock::new(File::open(&filename)?))
+            file: Arc::new(RwLock::new(File::open(&filename)?)),
         })
-
-
     }
 
-    pub fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
-        let file_lock = self.file.read();
+    pub async fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
+        let file_lock = self.file.read().await;
         let mut reader = BufReader::new(&*file_lock);
         let mut buf = vec![];
 
@@ -99,7 +97,7 @@ impl SSTable {
         Ok(None)
     }
 
-    pub fn merge(&self, sstable: &SSTable, dir: &str) -> io::Result<SSTable> {
+    pub async fn merge(&self, sstable: &SSTable, dir: &str) -> io::Result<SSTable> {
         let mut iter1 = match self.iter() {
             Ok(iter) => iter,
             Err(e) => return Err(e),
@@ -115,32 +113,32 @@ impl SSTable {
         let file = File::create(&filename)?;
         let mut writer = BufWriter::new(file);
 
-        let mut kv1 = iter1.next();
-        let mut kv2 = iter2.next();
+        let mut kv1 = iter1.next().await;
+        let mut kv2 = iter2.next().await;
         while kv1.is_some() || kv2.is_some() {
             match (&kv1, &kv2) {
                 (Some(Ok((k1, v1))), Some(Ok((k2, v2)))) => {
                     match k1.cmp(k2) {
                         std::cmp::Ordering::Less => {
                             Self::write_row(&mut writer, k1, v1)?;
-                            kv1 = iter1.next();
-                        },
+                            kv1 = iter1.next().await;
+                        }
                         std::cmp::Ordering::Greater => {
                             Self::write_row(&mut writer, k2, v2)?;
-                            kv2 = iter2.next();
-                        },
+                            kv2 = iter2.next().await;
+                        }
                         std::cmp::Ordering::Equal => {
                             Self::write_row(&mut writer, k1, v1)?;
-                            kv1 = iter1.next();
-                            kv2 = iter2.next();
-                        },
+                            kv1 = iter1.next().await;
+                            kv2 = iter2.next().await;
+                        }
                     }
-                },
+                }
                 (Some(Ok((k1, v1))), None) | (None, Some(Ok((k1, v1)))) => {
                     Self::write_row(&mut writer, k1, v1)?;
-                    kv1 = iter1.next();
-                    kv2 = iter2.next();
-                },
+                    kv1 = iter1.next().await;
+                    kv2 = iter2.next().await;
+                }
                 _ => break,
             }
         }
@@ -192,15 +190,22 @@ pub struct SSTableIter {
     buf: Vec<u8>,
 }
 
-impl Iterator for SSTableIter {
+#[async_trait]
+pub trait AsyncIterator {
+    type Item;
+    async fn next(&mut self) -> Option<Self::Item>;
+}
+
+#[async_trait]
+impl AsyncIterator for SSTableIter {
     type Item = io::Result<(String, models::value::Kind)>;
 
-    fn next(&mut self) -> Option<Self::Item> {
+    async fn next(&mut self) -> Option<Self::Item> {
         self.buf.clear();
 
         // First, read the length of the protobuf message (assuming it was written as a u64).
         let mut len_buf = [0u8; 8];
-        let reader_guard = self.reader.read();
+        let reader_guard = self.reader.read().await;
         let mut buf_reader = BufReader::new(&*reader_guard);
         let len = buf_reader.read_exact(&mut len_buf);
         match len {
@@ -234,7 +239,9 @@ impl Iterator for SSTableIter {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
     use rand::Rng;
+
     use super::*;
 
     async fn setup() -> (String, SSTable) {
@@ -265,5 +272,4 @@ mod tests {
         }
         path
     }
-
 }
