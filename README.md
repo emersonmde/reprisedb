@@ -1,5 +1,6 @@
 # RepriseDB
 
+[![Rust](https://github.com/emersonmde/reprisedb/actions/workflows/rust.yml/badge.svg)](https://github.com/emersonmde/reprisedb/actions/workflows/rust.yml)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 RepriseDB is an in-development, disk-persistent key-value store written in Rust. It's designed with an LSM Tree-based architecture, optimizing the interplay between in-memory and on-disk data. This project is still in the early stages of development and is not recommended for production use.
