@@ -1,12 +1,14 @@
 use std::{fs, io};
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use prost::Message;
+use tokio::fs::File;
+use tokio::io::{AsyncSeekExt, BufReader, BufWriter, SeekFrom};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -22,9 +24,8 @@ use crate::models::value;
 /// * `file`: A thread-safe reference to the file where the SSTable is stored.
 #[derive(Debug, Clone)]
 pub struct SSTable {
-    pub filename: String,
+    pub(crate) path: PathBuf,
     size: u64,
-    file: Arc<RwLock<File>>,
 }
 
 impl SSTable {
@@ -40,9 +41,8 @@ impl SSTable {
     pub fn new(filename: &str) -> std::io::Result<Self> {
         let metadata = fs::metadata(filename)?;
         Ok(SSTable {
-            filename: String::from(filename),
+            path: PathBuf::from(filename),
             size: metadata.len(),
-            file: Arc::new(RwLock::new(File::open(filename)?)),
         })
     }
 
@@ -57,9 +57,8 @@ impl SSTable {
     ///
     /// A result that will be an instance of SSTable or error.
     pub async fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> std::io::Result<Self> {
-        println!("dir: {}", dir);
         let filename = Self::get_new_filename(dir);
-        let file = File::create(filename.clone())?;
+        let file = File::create(filename.clone()).await?;
         let mut writer = BufWriter::new(file);
         let mut size: u64 = 0;
 
@@ -76,14 +75,15 @@ impl SSTable {
             let len = bytes.len() as u64;
             let len_bytes = len.to_be_bytes();
             size += len + len_bytes.len() as u64;
-            writer.write_all(&len_bytes)?;
-            writer.write_all(&bytes)?;
+            writer.write_all(&len_bytes).await?;
+            writer.write_all(&bytes).await?;
         }
 
+        writer.flush().await?;
+
         Ok(SSTable {
-            filename: String::from(&filename),
+            path: PathBuf::from(filename),
             size,
-            file: Arc::new(RwLock::new(File::open(&filename)?)),
         })
     }
 
@@ -99,33 +99,14 @@ impl SSTable {
     /// found, or an error if the operation failed. The option will be None
     /// if the key was not found in the SSTable.
     pub async fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
-        let file_lock = self.file.read().await;
-        let mut reader = BufReader::new(&*file_lock);
-        let mut buf = vec![];
+        let mut iter = self.iter().await?;
 
-        loop {
-            buf.clear();
-
-            // First, read the length of the protobuf message (assuming it was written as a u64).
-            let mut len_buf = [0u8; 8];
-            match reader.read_exact(&mut len_buf) {
-                Ok(()) => {
-                    let len = u64::from_be_bytes(len_buf);
-
-                    // Then read that number of bytes into the buffer.
-                    buf.resize(len as usize, 0);
-                    reader.read_exact(&mut buf)?;
-
-                    let row: models::Row = models::Row::decode(&*buf)
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-                    if row.key == key {
-                        return Ok(row.value.map(|v| v.kind.unwrap()));
+        while let Some(result) = iter.next().await {
+            match result {
+                Ok((row_key, value)) => {
+                    if row_key == key {
+                        return Ok(Some(value));
                     }
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    // We've reached the end of the file.
-                    break;
                 }
                 Err(e) => return Err(e),
             }
@@ -148,19 +129,19 @@ impl SSTable {
     /// successfully merged and written to a file, or an error if the
     /// operation failed.
     pub async fn merge(&self, sstable: &SSTable, dir: &str) -> io::Result<SSTable> {
-        let mut iter1 = match self.iter() {
+        let mut iter1 = match self.iter().await {
             Ok(iter) => iter,
             Err(e) => return Err(e),
         };
 
-        let mut iter2 = match sstable.iter() {
+        let mut iter2 = match sstable.iter().await {
             Ok(iter) => iter,
             Err(e) => return Err(e),
         };
 
         let filename = Self::get_new_filename(dir);
 
-        let file = File::create(&filename)?;
+        let file = File::create(&filename).await?;
         let mut writer = BufWriter::new(file);
 
         let mut kv1 = iter1.next().await;
@@ -170,37 +151,40 @@ impl SSTable {
                 (Some(Ok((k1, v1))), Some(Ok((k2, v2)))) => {
                     match k1.cmp(k2) {
                         std::cmp::Ordering::Less => {
-                            Self::write_row(&mut writer, k1, v1)?;
+                            Self::write_row(&mut writer, k1, v1).await?;
                             kv1 = iter1.next().await;
                         }
                         std::cmp::Ordering::Greater => {
-                            Self::write_row(&mut writer, k2, v2)?;
+                            Self::write_row(&mut writer, k2, v2).await?;
                             kv2 = iter2.next().await;
                         }
                         std::cmp::Ordering::Equal => {
-                            Self::write_row(&mut writer, k1, v1)?;
+                            Self::write_row(&mut writer, k1, v1).await?;
                             kv1 = iter1.next().await;
                             kv2 = iter2.next().await;
                         }
                     }
                 }
-                (Some(Ok((k1, v1))), None) | (None, Some(Ok((k1, v1)))) => {
-                    Self::write_row(&mut writer, k1, v1)?;
+                (Some(Ok((k1, v1))), None) => {
+                    Self::write_row(&mut writer, k1, v1).await?;
                     kv1 = iter1.next().await;
+                }
+                (None, Some(Ok((k2, v2)))) => {
+                    Self::write_row(&mut writer, k2, v2).await?;
                     kv2 = iter2.next().await;
                 }
                 _ => break,
             }
         }
 
-        writer.flush()?;
+        writer.flush().await?;
 
         let sstable = SSTable::new(filename.as_str())?;
         Ok(sstable)
     }
 
-
-    fn write_row(writer: &mut BufWriter<File>, key: &str, value: &value::Kind) -> io::Result<()> {
+    /// Encodes a key and value into a Row protobuf message and writes it to the writer.
+    async fn write_row(writer: &mut BufWriter<File>, key: &str, value: &value::Kind) -> io::Result<()> {
         let row = models::Row {
             key: key.to_string(),
             value: Some(models::Value { kind: Some(value.clone()) }),
@@ -211,13 +195,14 @@ impl SSTable {
 
         // Write the length of the protobuf message as a u64 before the message itself.
         let len = bytes.len() as u64;
-        writer.write_all(&len.to_be_bytes())?;
-        writer.write_all(&bytes)?;
+        writer.write_all(&len.to_be_bytes()).await?;
+        writer.write_all(&bytes).await?;
 
         Ok(())
     }
 
 
+    /// Generates a new filename in the format of "{dir}/Ptimestamp}_{uuid}".
     fn get_new_filename(dir: &str) -> String {
         let now = SystemTime::now();
         let since_the_epoch = now
@@ -228,15 +213,23 @@ impl SSTable {
         path_str
     }
 
-    pub fn iter(&self) -> io::Result<SSTableIter> {
-        let reader = Arc::clone(&self.file);
-        Ok(SSTableIter { reader, buf: Vec::new() })
+    /// Creates an iterator over the rows in the SSTable.
+    pub async fn iter(&self) -> io::Result<SSTableIter> {
+        let mut file = File::open(&self.path).await?;
+        file.seek(SeekFrom::Start(0)).await?;
+        let buf_reader = Arc::new(RwLock::new(BufReader::new(file)));
+
+        Ok(SSTableIter {
+            buf_reader,
+            buf: Vec::new(),
+        })
     }
 }
 
 
+/// An iterator over the rows in an SSTable.
 pub struct SSTableIter {
-    reader: Arc<RwLock<File>>,
+    buf_reader: Arc<RwLock<BufReader<File>>>,
     buf: Vec<u8>,
 }
 
@@ -255,18 +248,18 @@ impl AsyncIterator for SSTableIter {
 
         // First, read the length of the protobuf message (assuming it was written as a u64).
         let mut len_buf = [0u8; 8];
-        let reader_guard = self.reader.read().await;
-        let mut buf_reader = BufReader::new(&*reader_guard);
-        let len = buf_reader.read_exact(&mut len_buf);
-        match len {
-            Ok(()) => {
+        let mut buf_reader = self.buf_reader.write().await;
+
+        match buf_reader.read_exact(&mut len_buf).await {
+            Ok(_) => {
                 let len = u64::from_be_bytes(len_buf);
 
                 // Then read that number of bytes into the buffer.
                 self.buf.resize(len as usize, 0);
-                match buf_reader.read_exact(&mut self.buf) {
-                    Ok(()) => {
-                        let row: models::Row = match models::Row::decode(&*self.buf) {
+
+                match buf_reader.read_exact(&mut self.buf).await {
+                    Ok(_) => {
+                        let row: models::Row = match models::Row::decode(self.buf.as_slice()) {
                             Ok(row) => row,
                             Err(e) => return Some(Err(io::Error::new(io::ErrorKind::Other, e))),
                         };
@@ -277,7 +270,7 @@ impl AsyncIterator for SSTableIter {
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                // We've reached the end of the file.
+                // EOF
                 None
             }
             Err(e) => Some(Err(e)),
@@ -294,22 +287,78 @@ mod tests {
 
     use super::*;
 
-    async fn setup() -> (String, SSTable) {
+    async fn setup() -> (String, SSTable, BTreeMap<String, value::Kind>) {
         let sstable_dir = create_test_dir();
-        let memtable: BTreeMap<String, value::Kind> = BTreeMap::new();
-        let sstable = SSTable::create(&sstable_dir, &memtable).await.unwrap();
-        (sstable_dir, sstable)
+        let mut memtable: BTreeMap<String, value::Kind> = BTreeMap::new();
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..100 {
+            let i: u8 = rng.gen();
+            let key = format!("key{}", i);
+            let value = format!("value{}", i);
+
+            memtable.insert(format!("key{}", i), value::Kind::Str("value".to_string()));
+        }
+        let sstable = SSTable::create(&sstable_dir, &memtable.clone()).await.unwrap();
+        (sstable_dir, sstable, memtable)
     }
 
-    fn teardown(sstable_path: String) {
+    async fn teardown(sstable_path: String) {
         fs::remove_dir_all(sstable_path).unwrap();
     }
 
     #[tokio::test]
     async fn test_create() {
-        let (sstable_path, sstable) = setup().await;
-        assert!(Path::new(&sstable.filename).exists());
-        teardown(sstable_path);
+        let (sstable_path, sstable, _) = setup().await;
+        assert!(Path::new(&sstable.path).exists());
+        teardown(sstable_path).await;
+    }
+
+    #[tokio::test]
+    async fn test_sstable_new() {
+        let (sstable_path, _, _) = setup().await;
+        let sstable = SSTable::new(&sstable_path);
+        assert!(sstable.is_ok());
+        teardown(sstable_path).await;
+    }
+
+    #[tokio::test]
+    async fn test_sstable_get() {
+        let (sstable_path, _, _) = setup().await;
+
+        // Prepare test data
+        let mut data = BTreeMap::new();
+        data.insert("key1".to_string(), value::Kind::Int(42));
+        data.insert("key2".to_string(), value::Kind::Float(4.2));
+        data.insert("key3".to_string(), value::Kind::Str("42".to_string()));
+        let sstable = SSTable::create(&sstable_path, &data).await.unwrap();
+
+
+        assert_eq!(sstable.get("key1").await.unwrap().unwrap(), value::Kind::Int(42));
+        assert_eq!(sstable.get("key2").await.unwrap().unwrap(), value::Kind::Float(4.2));
+        assert_eq!(sstable.get("key3").await.unwrap().unwrap(), value::Kind::Str("42".to_string()));
+        teardown(sstable_path).await;
+    }
+
+    #[tokio::test]
+    async fn test_sstable_merge() {
+        let (sstable_path1, mut sstable1, mut memtable1) = setup().await;
+        let (sstable_path2, mut sstable2, mut memtable2) = setup().await;
+
+        let merged_sstable = sstable1.merge(&sstable2, &sstable_path1).await.unwrap();
+
+        for (key, value) in memtable1.iter() {
+            let result = merged_sstable.get(key).await.unwrap();
+            assert_eq!(result.unwrap(), value.clone());
+        }
+
+        for (key, value) in memtable2.iter() {
+            let result = merged_sstable.get(key).await.unwrap();
+            assert_eq!(result.unwrap(), value.clone());
+        }
+
+        teardown(sstable_path1).await;
+        teardown(sstable_path2).await;
     }
 
     fn create_test_dir() -> String {

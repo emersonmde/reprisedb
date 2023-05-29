@@ -119,8 +119,8 @@ impl Database {
             match result {
                 Ok(_) => {
                     // Delete the files associated with the two SSTables that were merged
-                    fs::remove_file(&latest.filename)?;
-                    fs::remove_file(&second_latest.filename)?;
+                    fs::remove_file(latest.path)?;
+                    fs::remove_file(second_latest.path)?;
                 }
                 Err(err) => {
                     // Handle the error, perform rollback
