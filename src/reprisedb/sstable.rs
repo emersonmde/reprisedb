@@ -13,6 +13,13 @@ use uuid::Uuid;
 use crate::models;
 use crate::models::value;
 
+/// Struct representing an SSTable (sorted-string table) which is a key-value
+/// storage format with each variable sized row prefixed by a u64 length.
+///
+/// An SSTable contains the following fields:
+/// * `filename`: The name of the file where the SSTable is stored.
+/// * `size`: The size of the SSTable file.
+/// * `file`: A thread-safe reference to the file where the SSTable is stored.
 #[derive(Debug, Clone)]
 pub struct SSTable {
     pub filename: String,
@@ -21,6 +28,15 @@ pub struct SSTable {
 }
 
 impl SSTable {
+    /// Create a new SSTable instance from a file.
+    ///
+    /// # Arguments
+    ///
+    /// * `filename` - The name of the file where the SSTable is stored.
+    ///
+    /// # Returns
+    ///
+    /// A result that will be an instance of SSTable  or error.
     pub fn new(filename: &str) -> std::io::Result<Self> {
         let metadata = fs::metadata(filename)?;
         Ok(SSTable {
@@ -30,6 +46,16 @@ impl SSTable {
         })
     }
 
+    /// Create a new SSTable from a memtable reference.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - The directory where the new file should be created.
+    /// * `snapshot` - A reference to the memtable (BTreeMap).
+    ///
+    /// # Returns
+    ///
+    /// A result that will be an instance of SSTable or error.
     pub async fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> std::io::Result<Self> {
         println!("dir: {}", dir);
         let filename = Self::get_new_filename(dir);
@@ -61,6 +87,17 @@ impl SSTable {
         })
     }
 
+    /// Get a value from the SSTable based on a key.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key of the value to get.
+    ///
+    /// # Returns
+    ///
+    /// A result that will be an option containing the value if the key was
+    /// found, or an error if the operation failed. The option will be None
+    /// if the key was not found in the SSTable.
     pub async fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
         let file_lock = self.file.read().await;
         let mut reader = BufReader::new(&*file_lock);
@@ -97,6 +134,19 @@ impl SSTable {
         Ok(None)
     }
 
+    /// Merge this SSTable with another one, writing the merged data to a
+    /// new SSTable.
+    ///
+    /// # Arguments
+    ///
+    /// * `sstable` - The other SSTable to merge with this one.
+    /// * `dir` - The directory where the new merged SSTable should be created.
+    ///
+    /// # Returns
+    ///
+    /// A result that will be an instance of SSTable if the SSTables were
+    /// successfully merged and written to a file, or an error if the
+    /// operation failed.
     pub async fn merge(&self, sstable: &SSTable, dir: &str) -> io::Result<SSTable> {
         let mut iter1 = match self.iter() {
             Ok(iter) => iter,
