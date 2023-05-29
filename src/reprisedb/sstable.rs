@@ -3,6 +3,7 @@ use std::fs::File;
 use std::{fs, io};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::{Arc};
+// TODO: Update to tokio
 use parking_lot::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,7 +30,7 @@ impl SSTable {
         })
     }
 
-    pub fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> std::io::Result<Self> {
+    pub async fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> std::io::Result<Self> {
         println!("dir: {}", dir);
         let filename = Self::get_new_filename(dir);
         let file = File::create(filename.clone())?;
@@ -199,7 +200,7 @@ impl Iterator for SSTableIter {
 
         // First, read the length of the protobuf message (assuming it was written as a u64).
         let mut len_buf = [0u8; 8];
-        let mut reader_guard = self.reader.read();
+        let reader_guard = self.reader.read();
         let mut buf_reader = BufReader::new(&*reader_guard);
         let len = buf_reader.read_exact(&mut len_buf);
         match len {
@@ -236,22 +237,22 @@ mod tests {
     use rand::Rng;
     use super::*;
 
-    #[test]
-    fn test_create() {
-        let (sstable_path, sstable) = setup();
-        assert!(Path::new(&sstable.filename).exists());
-        teardown(sstable_path);
-    }
-
-    fn setup() -> (String, SSTable) {
+    async fn setup() -> (String, SSTable) {
         let sstable_dir = create_test_dir();
         let memtable: BTreeMap<String, value::Kind> = BTreeMap::new();
-        let sstable = SSTable::create(&sstable_dir, &memtable).unwrap();
+        let sstable = SSTable::create(&sstable_dir, &memtable).await.unwrap();
         (sstable_dir, sstable)
     }
 
     fn teardown(sstable_path: String) {
         fs::remove_dir_all(sstable_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create() {
+        let (sstable_path, sstable) = setup().await;
+        assert!(Path::new(&sstable.filename).exists());
+        teardown(sstable_path);
     }
 
     fn create_test_dir() -> String {

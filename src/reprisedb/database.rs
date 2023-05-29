@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use parking_lot::RwLock;
+use tokio::sync::RwLock;
 use rand::Rng;
 
 use crate::models::value;
@@ -46,23 +46,22 @@ impl Database {
         })
     }
 
-    pub fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
-        self.memtable.write().put(key, value);
-        let memtable_guard = self.memtable.read();
-        let memtable_size = memtable_guard.size();
-        drop(memtable_guard);
-        if memtable_size > MEMTABLE_SIZE_TARGET {
-            self.flush_memtable()?;
+    pub async fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
+        let mut memtable_guard = self.memtable.write().await;
+        memtable_guard.put(key, value);
+        if memtable_guard.size() > MEMTABLE_SIZE_TARGET {
+            drop(memtable_guard);
+            self.flush_memtable().await?;
         }
         Ok(())
     }
 
-    pub fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
-        if let Some(value) = self.memtable.read().get(key) {
+    pub async fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
+        if let Some(value) = self.memtable.read().await.get(key) {
             return Ok(Some(value.clone()));
         }
 
-        for sstable in self.sstables.read().iter().rev() {
+        for sstable in self.sstables.read().await.iter().rev() {
             if let Some(value) = sstable.get(key)? {
                 return Ok(Some(value));
             }
@@ -71,22 +70,22 @@ impl Database {
         Ok(None)
     }
 
-    pub fn flush_memtable(&mut self) -> std::io::Result<()> {
-        if self.memtable.read().is_empty() {
+    pub async fn flush_memtable(&mut self) -> std::io::Result<()> {
+        let mut memtable = self.memtable.write().await;
+        if memtable.is_empty() {
             return Ok(());
         }
-        let sstable = sstable::SSTable::create(&self.sstable_dir, &self.memtable.read().snapshot())?;
-        self.sstables.write().push(sstable);
-
-        self.memtable.write().clear();
+        let sstable = sstable::SSTable::create(&self.sstable_dir, &memtable.snapshot()).await?;
+        self.sstables.write().await.push(sstable);
+        memtable.clear();
         Ok(())
     }
 
-    pub fn compact_sstables(&mut self) -> io::Result<()> {
+    pub async fn compact_sstables(&mut self) -> io::Result<()> {
         let sstables_backup = self.sstables.clone();
 
         // Get a read lock on self.sstables
-        let sstables_guard = self.sstables.read();
+        let sstables_guard = self.sstables.read().await;
 
         // Get the length of sstables once and reuse it
         let len = sstables_guard.len();
@@ -97,11 +96,11 @@ impl Database {
         // reverse here will allow us to pop the newest file
         for i in (1..len).rev() {
             let latest = {
-                let sstables_guard = self.sstables.read();
+                let sstables_guard = self.sstables.read().await;
                 sstables_guard[i].clone()
             };
             let second_latest = {
-                let sstables_guard = self.sstables.read();
+                let sstables_guard = self.sstables.read().await;
                 sstables_guard[i - 1].clone()
             };
 
@@ -110,7 +109,7 @@ impl Database {
                 let merged = latest.merge(&second_latest, &self.sstable_dir)?;
 
                 // Remove the old tables, add the new one
-                let mut sstables = self.sstables.write();
+                let mut sstables = self.sstables.write().await;
                 sstables.pop();
                 sstables.pop();
                 sstables.push(merged);
@@ -125,7 +124,7 @@ impl Database {
                 }
                 Err(err) => {
                     // Handle the error, perform rollback
-                    *self.sstables.write() = sstables_backup.write().clone();
+                    *self.sstables.write().await = sstables_backup.write().await.clone();
                     // TODO: Remove the new SSTable that was created?
                     return Err(err);
                 }
@@ -133,6 +132,13 @@ impl Database {
         }
 
         Ok(())
+    }
+
+    pub async fn shutdown(&mut self) {
+        match self.flush_memtable().await {
+            Ok(_) => (),
+            Err(e) => eprintln!("Failed to flush memtable on shutdown: {}", e),
+        }
     }
 
     fn get_files_by_modified_date(path: &str) -> io::Result<Vec<PathBuf>> {
@@ -153,22 +159,23 @@ impl Database {
     }
 }
 
-impl Drop for Database {
-    fn drop(&mut self) {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.flush_memtable()));
-
-        match result {
-            Ok(res) => {
-                if let Err(e) = res {
-                    eprintln!("Failed to flush memtable on drop: {}", e);
-                }
-            }
-            Err(_) => {
-                eprintln!("Panic occurred while flushing memtable on drop");
-            }
-        }
-    }
-}
+// TODO: implment non-async methods to flush memtable and shutdown
+// impl Drop for Database {
+//     fn drop(&mut self) {
+//         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(async || self.flush_memtable().await));
+//
+//         match result {
+//             Ok(res) => {
+//                 if let Err(e) = res {
+//                     eprintln!("Failed to flush memtable on drop: {}", e);
+//                 }
+//             }
+//             Err(_) => {
+//                 eprintln!("Panic occurred while flushing memtable on drop");
+//             }
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
@@ -185,31 +192,31 @@ mod tests {
         fs::remove_dir_all(&db.sstable_dir).unwrap();
     }
 
-    #[test]
-    fn test_new_database() {
+    #[tokio::test]
+    async fn test_new_database() {
         let db = Database::new("test_sstable_dir").unwrap();
 
-        assert!(db.memtable.read().is_empty());
-        assert!(db.sstables.write().is_empty());
+        assert!(db.memtable.read().await.is_empty());
+        assert!(db.sstables.write().await.is_empty());
         assert_eq!(db.sstable_dir, "test_sstable_dir");
 
         std::fs::remove_dir("test_sstable_dir").unwrap();
     }
 
-    #[test]
-    fn test_put_get_item() {
+    #[tokio::test]
+    async fn test_put_get_item() {
         // create database instance, call put, verify that item is added correctly
         let mut db = setup();
 
         let int_value = value::Kind::Int(44);
         let float_value = value::Kind::Float(12.2);
         let string_value = value::Kind::Str("Test".to_string());
-        db.put("int".to_string(), int_value.clone()).unwrap();
-        db.put("float".to_string(), float_value.clone()).unwrap();
-        db.put("string".to_string(), string_value.clone()).unwrap();
-        assert_eq!(&db.get("int").unwrap().unwrap(), &int_value);
-        assert_eq!(&db.get("float").unwrap().unwrap(), &float_value);
-        assert_eq!(&db.get("string").unwrap().unwrap(), &string_value);
+        db.put("int".to_string(), int_value.clone()).await.unwrap();
+        db.put("float".to_string(), float_value.clone()).await.unwrap();
+        db.put("string".to_string(), string_value.clone()).await.unwrap();
+        assert_eq!(&db.get("int").await.unwrap().unwrap(), &int_value);
+        assert_eq!(&db.get("float").await.unwrap().unwrap(), &float_value);
+        assert_eq!(&db.get("string").await.unwrap().unwrap(), &string_value);
 
         teardown(db);
     }
