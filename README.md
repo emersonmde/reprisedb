@@ -30,7 +30,7 @@ RepriseDB is still in development. For early experimentation, add this to your `
 
 ```toml
 [dependencies]
-reprisedb = { git = "https://github.com/matthew-emerson/reprisedb.git", branch = "main" }
+reprisedb = { git = "https://github.com/emersonmde/reprisedb.git", branch = "main" }
 ```
 
 ## Documentation
