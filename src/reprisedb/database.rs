@@ -16,7 +16,7 @@ const MEMTABLE_SIZE_TARGET: usize = 1024 * 4;
 
 #[derive(Debug)]
 pub struct Database {
-    pub memtable: MemTable,
+    pub memtable: Arc<RwLock<MemTable>>,
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
     pub sstable_dir: String,
 }
@@ -37,7 +37,7 @@ impl Database {
             sstables.push(sstable::SSTable::new(&path_str)?);
         }
 
-        let memtable = MemTable::new();
+        let memtable = Arc::new(RwLock::new(MemTable::new()));
 
         Ok(Database {
             memtable,
@@ -47,15 +47,18 @@ impl Database {
     }
 
     pub fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
-        self.memtable.put(key, value);
-        if self.memtable.size() > MEMTABLE_SIZE_TARGET {
+        self.memtable.write().put(key, value);
+        let memtable_guard = self.memtable.read();
+        let memtable_size = memtable_guard.size();
+        drop(memtable_guard);
+        if memtable_size > MEMTABLE_SIZE_TARGET {
             self.flush_memtable()?;
         }
         Ok(())
     }
 
     pub fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
-        if let Some(value) = self.memtable.get(key) {
+        if let Some(value) = self.memtable.read().get(key) {
             return Ok(Some(value.clone()));
         }
 
@@ -69,13 +72,13 @@ impl Database {
     }
 
     pub fn flush_memtable(&mut self) -> std::io::Result<()> {
-        if self.memtable.is_empty() {
+        if self.memtable.read().is_empty() {
             return Ok(());
         }
-        let sstable = sstable::SSTable::create(&self.sstable_dir, &self.memtable.snapshot())?;
+        let sstable = sstable::SSTable::create(&self.sstable_dir, &self.memtable.read().snapshot())?;
         self.sstables.write().push(sstable);
 
-        self.memtable.clear();
+        self.memtable.write().clear();
         Ok(())
     }
 
@@ -186,7 +189,7 @@ mod tests {
     fn test_new_database() {
         let db = Database::new("test_sstable_dir").unwrap();
 
-        assert!(db.memtable.is_empty());
+        assert!(db.memtable.read().is_empty());
         assert!(db.sstables.write().is_empty());
         assert_eq!(db.sstable_dir, "test_sstable_dir");
 
