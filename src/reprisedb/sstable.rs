@@ -297,7 +297,7 @@ mod tests {
             let key = format!("key{}", i);
             let value = format!("value{}", i);
 
-            memtable.insert(format!("key{}", i), value::Kind::Str("value".to_string()));
+            memtable.insert(key, value::Kind::Str(value));
         }
         let sstable = SSTable::create(&sstable_dir, &memtable.clone()).await.unwrap();
         (sstable_dir, sstable, memtable)
@@ -342,8 +342,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sstable_merge() {
-        let (sstable_path1, mut sstable1, mut memtable1) = setup().await;
-        let (sstable_path2, mut sstable2, mut memtable2) = setup().await;
+        let (sstable_path1, sstable1, memtable1) = setup().await;
+        let (sstable_path2, sstable2, memtable2) = setup().await;
 
         let merged_sstable = sstable1.merge(&sstable2, &sstable_path1).await.unwrap();
 
