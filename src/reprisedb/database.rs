@@ -12,7 +12,7 @@ use crate::models::value;
 use crate::reprisedb::memtable::MemTable;
 use crate::reprisedb::sstable;
 
-const MEMTABLE_SIZE_TARGET: usize = 1024 * 4;
+const MEMTABLE_SIZE_TARGET: usize = 1024 * 1024;
 
 /// A simple LSM (Log-Structured Merge-tree) database.
 ///
@@ -423,6 +423,60 @@ mod tests {
         assert_eq!(&db.get("int").await.unwrap().unwrap(), &int_value);
         assert_eq!(&db.get("float").await.unwrap().unwrap(), &float_value);
         assert_eq!(&db.get("string").await.unwrap().unwrap(), &string_value);
+
+        teardown(db);
+    }
+
+    #[tokio::test]
+    async fn test_flush_memtable() {
+        let mut db = setup();
+        let test_value = value::Kind::Int(44);
+        db.put("test".to_string(), test_value.clone()).await.unwrap();
+        db.flush_memtable().await.unwrap();
+
+        assert!(db.memtable.read().await.is_empty());
+        assert!(!db.sstables.write().await.is_empty());
+
+        teardown(db);
+    }
+
+    #[tokio::test]
+    async fn test_get_item_after_memtable_flush() {
+        let mut db = setup();
+        let test_value = value::Kind::Int(44);
+        db.put("test".to_string(), test_value.clone()).await.unwrap();
+        db.flush_memtable().await.unwrap();
+
+        assert_eq!(&db.get("test").await.unwrap().unwrap(), &test_value);
+
+        teardown(db);
+    }
+
+    #[tokio::test]
+    async fn test_compact_sstables() {
+        let mut db = setup();
+        for i in 0..125 {
+            let key = format!("key{}", i);
+            db.put(key, value::Kind::Int(i as i64)).await.unwrap();
+        }
+        db.flush_memtable().await.unwrap();
+
+        for i in 75..200 {
+            let key = format!("key{}", i);
+            db.put(key, value::Kind::Int(i as i64)).await.unwrap();
+        }
+        db.flush_memtable().await.unwrap();
+
+        let original_sstable_count = db.sstables.write().await.len();
+        assert_eq!(original_sstable_count, 2);
+        db.compact_sstables().await.unwrap();
+        let compacted_sstable_count = db.sstables.write().await.len();
+        assert_eq!(compacted_sstable_count, 1);
+
+        for i in 0..200 {
+            let key = format!("key{}", i);
+            assert_eq!(&db.get(&key).await.unwrap().unwrap(), &value::Kind::Int(i as i64));
+        }
 
         teardown(db);
     }
