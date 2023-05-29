@@ -20,7 +20,6 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y protobuf-compiler
-        cargo install protobuf-codegen
     - name: Build
       run: cargo build --verbose
     - name: Run tests
