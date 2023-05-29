@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::{fs, io};
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::sync::{Arc};
+use parking_lot::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use prost::Message;
@@ -13,13 +15,18 @@ use crate::models::value;
 #[derive(Debug, Clone)]
 pub struct SSTable {
     pub filename: String,
-    size: u64
+    size: u64,
+    file: Arc<RwLock<File>>
 }
 
 impl SSTable {
     pub fn new(filename: &str) -> std::io::Result<Self> {
         let metadata = fs::metadata(filename)?;
-        Ok(SSTable { filename: String::from(filename), size: metadata.len() })
+        Ok(SSTable {
+            filename: String::from(filename),
+            size: metadata.len(),
+            file: Arc::new(RwLock::new(File::open(filename)?))
+        })
     }
 
     pub fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> std::io::Result<Self> {
@@ -46,12 +53,18 @@ impl SSTable {
             writer.write_all(&bytes)?;
         }
 
-        Ok(SSTable { filename: String::from(filename), size })
+        Ok(SSTable {
+            filename: String::from(&filename),
+            size,
+            file: Arc::new(RwLock::new(File::open(&filename)?))
+        })
+
+
     }
 
     pub fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
-        let file = File::open(&self.filename)?;
-        let mut reader = BufReader::new(file);
+        let file_lock = self.file.read();
+        let mut reader = BufReader::new(&*file_lock);
         let mut buf = vec![];
 
         loop {
@@ -167,15 +180,14 @@ impl SSTable {
     }
 
     pub fn iter(&self) -> io::Result<SSTableIter> {
-        let file = File::open(&self.filename)?;
-        let reader = BufReader::new(file);
+        let reader = Arc::clone(&self.file);
         Ok(SSTableIter { reader, buf: Vec::new() })
     }
 }
 
 
 pub struct SSTableIter {
-    reader: BufReader<File>,
+    reader: Arc<RwLock<File>>,
     buf: Vec<u8>,
 }
 
@@ -187,13 +199,16 @@ impl Iterator for SSTableIter {
 
         // First, read the length of the protobuf message (assuming it was written as a u64).
         let mut len_buf = [0u8; 8];
-        match self.reader.read_exact(&mut len_buf) {
+        let mut reader_guard = self.reader.read();
+        let mut buf_reader = BufReader::new(&*reader_guard);
+        let len = buf_reader.read_exact(&mut len_buf);
+        match len {
             Ok(()) => {
                 let len = u64::from_be_bytes(len_buf);
 
                 // Then read that number of bytes into the buffer.
                 self.buf.resize(len as usize, 0);
-                match self.reader.read_exact(&mut self.buf) {
+                match buf_reader.read_exact(&mut self.buf) {
                     Ok(()) => {
                         let row: models::Row = match models::Row::decode(&*self.buf) {
                             Ok(row) => row,
