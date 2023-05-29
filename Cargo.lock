@@ -433,7 +433,6 @@ name = "reprisedb"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "parking_lot",
  "prost",
  "prost-build",
  "prost-derive",
