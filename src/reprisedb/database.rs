@@ -336,6 +336,9 @@ impl Database {
             }
         }
 
+        let remaining_len = self.sstables.read().await.len();
+        println!("Successfully completed compacting {} SSTables. {} SSTables remaining.", len - remaining_len, remaining_len);
+
         Ok(())
     }
 
