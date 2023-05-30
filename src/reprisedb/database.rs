@@ -53,7 +53,7 @@ pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
     pub sstable_dir: String,
-    pub compacting_handle: Arc<Mutex<Option<JoinHandle<Result<(), io::Error>>>>>
+    pub compacting_handle: Arc<Mutex<Option<JoinHandle<Result<(), io::Error>>>>>,
 }
 
 impl Database {
@@ -355,7 +355,8 @@ impl Database {
         match &*compacting_handle {
             Some(_) => {
                 println!("Compaction process already running!");
-                return Ok(());
+                return Err(io::Error::new(io::ErrorKind::Other,
+                                          "Compaction process already running!").into());
             }
             None => {}
         }
@@ -452,6 +453,7 @@ impl Clone for Database {
 #[cfg(test)]
 mod tests {
     use rand::Rng;
+
     use super::*;
 
     fn setup() -> Database {
