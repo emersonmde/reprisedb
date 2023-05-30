@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use tokio::sync::RwLock;
-use rand::Rng;
+use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
+use tokio::time::{Duration, interval};
 
 use crate::models::value;
 use crate::reprisedb::memtable::MemTable;
@@ -52,6 +53,7 @@ pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
     pub sstable_dir: String,
+    pub compacting_handle: Arc<Mutex<Option<JoinHandle<Result<(), io::Error>>>>>
 }
 
 impl Database {
@@ -102,11 +104,33 @@ impl Database {
 
         let memtable = Arc::new(RwLock::new(MemTable::new()));
 
-        Ok(Database {
+        let database = Database {
             memtable,
             sstables: Arc::new(RwLock::new(sstables)),
             sstable_dir: String::from(sstable_dir),
-        })
+            compacting_handle: Arc::new(Mutex::new(None)),
+        };
+        database.init();
+        Ok(database)
+    }
+
+    /// Initializes the database
+    ///
+    /// This method starts a background task that periodically checks the size of the memtable and triggers
+    /// compaction every 60 seconds.
+    fn init(&self) {
+        let mut db_clone = self.clone();
+        let compaction_interval = Duration::from_secs(10);
+        tokio::spawn(async move {
+            let mut interval = interval(compaction_interval);
+            loop {
+                interval.tick().await;
+                match db_clone.start_compacting().await {
+                    Ok(_) => println!("Compaction completed."),
+                    Err(e) => eprintln!("Compaction failed: {:?}", e),
+                }
+            }
+        });
     }
 
     /// Inserts a key-value pair into the database.
@@ -262,24 +286,6 @@ impl Database {
     /// # Errors
     ///
     /// This function will return an `io::Error` if any I/O operation fails during the process.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use reprisedb::reprisedb::Database;
-    /// use std::fs;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
-    ///     match db.compact_sstables().await {
-    ///         Ok(_) => println!("Compaction completed successfully"),
-    ///         Err(e) => eprintln!("Failed to compact SSTables: {}", e),
-    ///     }
-    ///     db.shutdown().await;
-    ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
-    /// }
-    /// ```
     pub async fn compact_sstables(&mut self) -> io::Result<()> {
         let sstables_backup = self.sstables.clone();
 
@@ -329,6 +335,37 @@ impl Database {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Start the compaction process in the background.
+    ///
+    /// This method spawns a new Tokio task to run the compaction process.
+    /// If a compaction process is already running, this method does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the compaction process fails.
+    pub async fn start_compacting(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut compacting_handle = self.compacting_handle.lock().await;
+        match &*compacting_handle {
+            Some(_) => {
+                println!("Compaction process already running!");
+                return Ok(());
+            }
+            None => {}
+        }
+
+        let mut db_clone = self.clone();
+        let handle = tokio::spawn(async move {
+            let result = db_clone.compact_sstables().await;
+            if let Err(e) = &result {
+                eprintln!("Failed to compact sstables: {}", e);
+            }
+            result
+        });
+        *compacting_handle = Some(handle);
 
         Ok(())
     }
@@ -404,12 +441,14 @@ impl Clone for Database {
             memtable: Arc::clone(&self.memtable),
             sstables: Arc::clone(&self.sstables),
             sstable_dir: self.sstable_dir.clone(),
+            compacting_handle: Arc::clone(&self.compacting_handle),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rand::Rng;
     use super::*;
 
     fn setup() -> Database {
