@@ -2,6 +2,7 @@
 mod sstable;
 mod memtable;
 mod database;
+mod index;
 
 pub use database::Database;
 pub use database::DatabaseConfig;

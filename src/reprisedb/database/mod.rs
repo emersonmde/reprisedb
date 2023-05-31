@@ -189,8 +189,9 @@ impl Database {
     pub async fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
         let mut memtable_guard = self.memtable.write().await;
         memtable_guard.put(key, value);
-        if memtable_guard.size() > self.memtable_size_target {
-            drop(memtable_guard);
+        drop(memtable_guard);
+        if self.memtable.read().await.size() > self.memtable_size_target {
+            println!("Memtable size exceeded target. Flushing memtable.");
             self.flush_memtable().await?;
         }
         Ok(())
