@@ -1,3 +1,6 @@
+pub mod builder;
+pub mod tests;
+
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -13,7 +16,12 @@ use crate::models::value;
 use crate::reprisedb::memtable::MemTable;
 use crate::reprisedb::sstable;
 
-const MEMTABLE_SIZE_TARGET: usize = 1024 * 1024;
+
+pub struct DatabaseConfig {
+    pub memtable_size_target: usize,
+    pub sstable_dir: String,
+    pub compaction_interval: Duration,
+}
 
 /// A simple LSM (Log-Structured Merge-tree) database.
 ///
@@ -32,12 +40,14 @@ const MEMTABLE_SIZE_TARGET: usize = 1024 * 1024;
 ///
 /// ```
 /// use reprisedb::reprisedb::Database;
+/// use reprisedb::reprisedb::DatabaseConfigBuilder;
 /// use reprisedb::models::value::Kind;
 /// use std::fs;
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
+///     let mut db = Database::new(config).expect("Database initialization failed");
 ///
 ///     db.put("my_key".to_string(), Kind::Str("my_value".to_string())).await.expect("Put operation failed");
 ///     let value = db.get("my_key").await.expect("Get operation failed");
@@ -52,8 +62,12 @@ const MEMTABLE_SIZE_TARGET: usize = 1024 * 1024;
 pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
-    pub sstable_dir: String,
     pub compacting_handle: Arc<Mutex<Option<JoinHandle<Result<(), io::Error>>>>>,
+
+    // Options
+    pub sstable_dir: String,
+    memtable_size_target: usize,
+    compaction_interval: Duration,
 }
 
 impl Database {
@@ -77,24 +91,30 @@ impl Database {
     ///
     /// ```
     /// use reprisedb::reprisedb::Database;
+    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
     /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
+    ///     let mut db = Database::new(config).expect("Database initialization failed");
     ///     // ...
     ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
     ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
     /// }
     /// ```
-    pub fn new(sstable_dir: &str) -> std::io::Result<Self> {
-        let sstable_path = Path::new(sstable_dir);
+    pub fn new(config: DatabaseConfig) -> io::Result<Self> {
+        let sstable_dir = config.sstable_dir;
+        let memtable_size_target = config.memtable_size_target;
+        let compaction_interval = config.compaction_interval;
+
+        let sstable_path = Path::new(&sstable_dir);
         if !sstable_path.exists() {
             fs::create_dir(sstable_path)?;
         }
 
         let mut sstables = Vec::new();
-        for path in Self::get_files_by_modified_date(sstable_dir)?.iter().rev() {
+        for path in Self::get_files_by_modified_date(&sstable_dir)?.iter().rev() {
             let os_path_str = path.clone().into_os_string();
             let path_str = os_path_str.into_string().map_err(|e| {
                 io::Error::new(io::ErrorKind::InvalidData, format!("Invalid file path: {:?}", e))
@@ -107,8 +127,10 @@ impl Database {
         let database = Database {
             memtable,
             sstables: Arc::new(RwLock::new(sstables)),
-            sstable_dir: String::from(sstable_dir),
             compacting_handle: Arc::new(Mutex::new(None)),
+            sstable_dir: sstable_dir.clone(),
+            memtable_size_target,
+            compaction_interval,
         };
         database.init();
         Ok(database)
@@ -120,9 +142,8 @@ impl Database {
     /// compaction every 60 seconds.
     fn init(&self) {
         let mut db_clone = self.clone();
-        let compaction_interval = Duration::from_secs(10);
         tokio::spawn(async move {
-            let mut interval = interval(compaction_interval);
+            let mut interval = interval(db_clone.compaction_interval);
             loop {
                 interval.tick().await;
                 match db_clone.start_compacting().await {
@@ -152,12 +173,14 @@ impl Database {
     ///
     /// ```no_run
     /// use reprisedb::reprisedb::Database;
+    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
     /// use reprisedb::models::value::Kind;
     /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
+    ///     let mut db = Database::new(config).expect("Database initialization failed");
     ///     db.put("my_key".to_string(), Kind::Int(42)).await.expect("Failed to insert key-value pair");
     ///     db.shutdown().await;
     ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
@@ -166,7 +189,7 @@ impl Database {
     pub async fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
         let mut memtable_guard = self.memtable.write().await;
         memtable_guard.put(key, value);
-        if memtable_guard.size() > MEMTABLE_SIZE_TARGET {
+        if memtable_guard.size() > self.memtable_size_target {
             drop(memtable_guard);
             self.flush_memtable().await?;
         }
@@ -195,11 +218,13 @@ impl Database {
     ///
     /// ```no_run
     /// use reprisedb::reprisedb::Database;
+    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
     /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
+    ///     let mut db = Database::new(config).expect("Database initialization failed");
     ///     match db.get("my_key").await {
     ///         Ok(Some(value)) => println!("Retrieved value: {:?}", value),
     ///         Ok(None) => println!("Key not found"),
@@ -243,12 +268,14 @@ impl Database {
     ///
     /// ```no_run
     /// use reprisedb::reprisedb::Database;
+    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
     /// use reprisedb::models::value::Kind;
     /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
+    ///     let mut db = Database::new(config).expect("Database initialization failed");
     ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
     ///     match db.flush_memtable().await {
     ///         Ok(_) => println!("Memtable flushed successfully"),
@@ -330,7 +357,6 @@ impl Database {
                 Err(err) => {
                     // Handle the error, perform rollback
                     *self.sstables.write().await = sstables_backup.write().await.clone();
-                    // TODO: Remove the new SSTable that was created?
                     return Err(err);
                 }
             }
@@ -351,8 +377,9 @@ impl Database {
     ///
     /// Returns an error if the compaction process fails.
     pub async fn start_compacting(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut compacting_handle = self.compacting_handle.lock().await;
-        match &*compacting_handle {
+        let compacting_handle = self.compacting_handle.clone();
+        let mut compacting_handle_guard = self.compacting_handle.lock().await;
+        match &*compacting_handle_guard {
             Some(_) => {
                 println!("Compaction process already running!");
                 return Err(io::Error::new(io::ErrorKind::Other,
@@ -367,9 +394,11 @@ impl Database {
             if let Err(e) = &result {
                 eprintln!("Failed to compact sstables: {}", e);
             }
+            let mut compacting_handle_guard = compacting_handle.lock().await;
+            *compacting_handle_guard = None;
             result
         });
-        *compacting_handle = Some(handle);
+        *compacting_handle_guard = Some(handle);
 
         Ok(())
     }
@@ -386,12 +415,14 @@ impl Database {
     ///
     /// ```no_run
     /// use reprisedb::reprisedb::Database;
+    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
     /// use reprisedb::models::value::Kind;
     /// use std::fs;
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let mut db = Database::new("/tmp/mydb").expect("Database initialization failed");
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
+    ///     let mut db = Database::new(config).expect("Database initialization failed");
     ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
     ///     db.shutdown().await;
     /// }
@@ -421,132 +452,16 @@ impl Database {
     }
 }
 
-// TODO: implment non-async methods to flush memtable and shutdown
-// impl Drop for Database {
-//     fn drop(&mut self) {
-//         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(async || self.flush_memtable().await));
-//
-//         match result {
-//             Ok(res) => {
-//                 if let Err(e) = res {
-//                     eprintln!("Failed to flush memtable on drop: {}", e);
-//                 }
-//             }
-//             Err(_) => {
-//                 eprintln!("Panic occurred while flushing memtable on drop");
-//             }
-//         }
-//     }
-// }
-
 impl Clone for Database {
     fn clone(&self) -> Self {
         Database {
             memtable: Arc::clone(&self.memtable),
             sstables: Arc::clone(&self.sstables),
-            sstable_dir: self.sstable_dir.clone(),
             compacting_handle: Arc::clone(&self.compacting_handle),
+            sstable_dir: self.sstable_dir.clone(),
+            memtable_size_target: self.memtable_size_target.clone(),
+            compaction_interval: self.compaction_interval.clone(),
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use rand::Rng;
-
-    use super::*;
-
-    fn setup() -> Database {
-        let mut rng = rand::thread_rng();
-        let i: u8 = rng.gen();
-        let path = format!("/tmp/reprisedb_sstring_testdir{}", i);
-        return Database::new(&path).unwrap();
-    }
-
-    fn teardown(db: Database) {
-        fs::remove_dir_all(&db.sstable_dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_new_database() {
-        let db = Database::new("test_sstable_dir").unwrap();
-
-        assert!(db.memtable.read().await.is_empty());
-        assert!(db.sstables.write().await.is_empty());
-        assert_eq!(db.sstable_dir, "test_sstable_dir");
-
-        std::fs::remove_dir("test_sstable_dir").unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_put_get_item() {
-        // create database instance, call put, verify that item is added correctly
-        let mut db = setup();
-
-        let int_value = value::Kind::Int(44);
-        let float_value = value::Kind::Float(12.2);
-        let string_value = value::Kind::Str("Test".to_string());
-        db.put("int".to_string(), int_value.clone()).await.unwrap();
-        db.put("float".to_string(), float_value.clone()).await.unwrap();
-        db.put("string".to_string(), string_value.clone()).await.unwrap();
-        assert_eq!(&db.get("int").await.unwrap().unwrap(), &int_value);
-        assert_eq!(&db.get("float").await.unwrap().unwrap(), &float_value);
-        assert_eq!(&db.get("string").await.unwrap().unwrap(), &string_value);
-
-        teardown(db);
-    }
-
-    #[tokio::test]
-    async fn test_flush_memtable() {
-        let mut db = setup();
-        let test_value = value::Kind::Int(44);
-        db.put("test".to_string(), test_value.clone()).await.unwrap();
-        db.flush_memtable().await.unwrap();
-
-        assert!(db.memtable.read().await.is_empty());
-        assert!(!db.sstables.write().await.is_empty());
-
-        teardown(db);
-    }
-
-    #[tokio::test]
-    async fn test_get_item_after_memtable_flush() {
-        let mut db = setup();
-        let test_value = value::Kind::Int(44);
-        db.put("test".to_string(), test_value.clone()).await.unwrap();
-        db.flush_memtable().await.unwrap();
-
-        assert_eq!(&db.get("test").await.unwrap().unwrap(), &test_value);
-
-        teardown(db);
-    }
-
-    #[tokio::test]
-    async fn test_compact_sstables() {
-        let mut db = setup();
-        for i in 0..125 {
-            let key = format!("key{}", i);
-            db.put(key, value::Kind::Int(i as i64)).await.unwrap();
-        }
-        db.flush_memtable().await.unwrap();
-
-        for i in 75..200 {
-            let key = format!("key{}", i);
-            db.put(key, value::Kind::Int(i as i64)).await.unwrap();
-        }
-        db.flush_memtable().await.unwrap();
-
-        let original_sstable_count = db.sstables.write().await.len();
-        assert_eq!(original_sstable_count, 2);
-        db.compact_sstables().await.unwrap();
-        let compacted_sstable_count = db.sstables.write().await.len();
-        assert_eq!(compacted_sstable_count, 1);
-
-        for i in 0..200 {
-            let key = format!("key{}", i);
-            assert_eq!(&db.get(&key).await.unwrap().unwrap(), &value::Kind::Int(i as i64));
-        }
-
-        teardown(db);
-    }
-}

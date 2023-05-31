@@ -304,6 +304,7 @@ mod tests {
     }
 
     async fn teardown(sstable_path: String) {
+        println!("Removing {}", sstable_path);
         fs::remove_dir_all(sstable_path).unwrap();
     }
 
