@@ -33,6 +33,13 @@ RepriseDB is still in development. For early experimentation, add this to your `
 reprisedb = { git = "https://github.com/emersonmde/reprisedb.git", branch = "main" }
 ```
 
+## Todo
+- Add API
+- Create sparse indexes of SSTables to allow for binary search
+- Add multi-layer compaction strategy to better support time series writes
+- Add a bloom filter for each of the SSTables and MemTable to speed up lookups
+- Add a write-ahead log to support crash recovery
+
 ## Documentation
 
 Additional documentation for methods and structures is in progress.
