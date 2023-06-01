@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use tokio::sync::{Mutex, RwLock};
-use tokio::task::JoinHandle;
 use tokio::time::{Duration, interval};
 
 use crate::models::value;
@@ -47,7 +46,7 @@ pub struct DatabaseConfig {
 /// #[tokio::main]
 /// async fn main() {
 ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
-///     let mut db = Database::new(config).expect("Database initialization failed");
+///     let mut db = Database::new(config).await.expect("Database initialization failed");
 ///
 ///     db.put("my_key".to_string(), Kind::Str("my_value".to_string())).await.expect("Put operation failed");
 ///     let value = db.get("my_key").await.expect("Get operation failed");
@@ -62,7 +61,8 @@ pub struct DatabaseConfig {
 pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
-    pub compacting_handle: Arc<Mutex<Option<JoinHandle<Result<(), io::Error>>>>>,
+    // pub compacting_notify: Arc<Mutex<Option<JoinHandle<Result<(), io::Error>>>>>,
+    pub compacting_notify: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
 
     // Options
     pub sstable_dir: String,
@@ -97,13 +97,13 @@ impl Database {
     /// #[tokio::main]
     /// async fn main() {
     ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
-    ///     let mut db = Database::new(config).expect("Database initialization failed");
+    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     // ...
     ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
     ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
     /// }
     /// ```
-    pub fn new(config: DatabaseConfig) -> io::Result<Self> {
+    pub async fn new(config: DatabaseConfig) -> io::Result<Self> {
         let sstable_dir = config.sstable_dir;
         let memtable_size_target = config.memtable_size_target;
         let compaction_interval = config.compaction_interval;
@@ -119,7 +119,7 @@ impl Database {
             let path_str = os_path_str.into_string().map_err(|e| {
                 io::Error::new(io::ErrorKind::InvalidData, format!("Invalid file path: {:?}", e))
             })?;
-            sstables.push(sstable::SSTable::new(&path_str)?);
+            sstables.push(sstable::SSTable::new(&path_str).await?);
         }
 
         let memtable = Arc::new(RwLock::new(MemTable::new()));
@@ -127,7 +127,7 @@ impl Database {
         let database = Database {
             memtable,
             sstables: Arc::new(RwLock::new(sstables)),
-            compacting_handle: Arc::new(Mutex::new(None)),
+            compacting_notify: Arc::new(Mutex::new(None)),
             sstable_dir: sstable_dir.clone(),
             memtable_size_target,
             compaction_interval,
@@ -180,7 +180,7 @@ impl Database {
     /// #[tokio::main]
     /// async fn main() {
     ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
-    ///     let mut db = Database::new(config).expect("Database initialization failed");
+    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     db.put("my_key".to_string(), Kind::Int(42)).await.expect("Failed to insert key-value pair");
     ///     db.shutdown().await;
     ///     fs::remove_dir_all("/tmp/mydb").expect("Failed to remove directory");
@@ -225,7 +225,7 @@ impl Database {
     /// #[tokio::main]
     /// async fn main() {
     ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
-    ///     let mut db = Database::new(config).expect("Database initialization failed");
+    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     match db.get("my_key").await {
     ///         Ok(Some(value)) => println!("Retrieved value: {:?}", value),
     ///         Ok(None) => println!("Key not found"),
@@ -276,7 +276,7 @@ impl Database {
     /// #[tokio::main]
     /// async fn main() {
     ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
-    ///     let mut db = Database::new(config).expect("Database initialization failed");
+    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
     ///     match db.flush_memtable().await {
     ///         Ok(_) => println!("Memtable flushed successfully"),
@@ -378,31 +378,46 @@ impl Database {
     ///
     /// Returns an error if the compaction process fails.
     pub async fn start_compacting(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let compacting_handle = self.compacting_handle.clone();
-        let mut compacting_handle_guard = self.compacting_handle.lock().await;
-        match &*compacting_handle_guard {
+        let compacting_notify = self.compacting_notify.clone();
+        let mut compacting_notify_guard = self.compacting_notify.lock().await;
+        match &*compacting_notify_guard {
             Some(_) => {
                 println!("Compaction process already running!");
-                return Err(io::Error::new(io::ErrorKind::Other,
-                                          "Compaction process already running!").into());
+                return Err(io::Error::new(io::ErrorKind::Other, "Compaction process already running!").into());
             }
             None => {}
         }
 
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify_clone = notify.clone();
+
         let mut db_clone = self.clone();
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             let result = db_clone.compact_sstables().await;
             if let Err(e) = &result {
                 eprintln!("Failed to compact sstables: {}", e);
             }
-            let mut compacting_handle_guard = compacting_handle.lock().await;
-            *compacting_handle_guard = None;
+            notify_clone.notify_one();
             result
         });
-        *compacting_handle_guard = Some(handle);
+
+        *compacting_notify_guard = Some(notify);
+        Ok(())
+    }
+
+    pub async fn wait_for_compaction(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let compacting_notify = self.compacting_notify.clone();
+        let compacting_notify_guard = compacting_notify.lock().await;
+
+        // If a compaction process is running, we wait for it to notify us that it's done
+        if let Some(notify) = &*compacting_notify_guard {
+            notify.notified().await;
+            println!("Compaction process completed successfully.");
+        }
 
         Ok(())
     }
+
 
     /// Shuts down the database, ensuring that the current memtable is flushed to disk.
     ///
@@ -423,7 +438,7 @@ impl Database {
     /// #[tokio::main]
     /// async fn main() {
     ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb".to_string()).build();
-    ///     let mut db = Database::new(config).expect("Database initialization failed");
+    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
     ///     db.shutdown().await;
     /// }
@@ -431,7 +446,11 @@ impl Database {
     pub async fn shutdown(&mut self) {
         match self.flush_memtable().await {
             Ok(_) => (),
-            Err(e) => eprintln!("Failed to flush memtable on shutdown: {}", e),
+            Err(e) => eprintln!("Failed to flush MemTable on shutdown: {}", e),
+        }
+        match self.wait_for_compaction().await {
+            Ok(_) => (),
+            Err(e) => eprintln!("Failed to wait for compaction to complete on shutdown: {}", e),
         }
     }
 
@@ -458,7 +477,7 @@ impl Clone for Database {
         Database {
             memtable: Arc::clone(&self.memtable),
             sstables: Arc::clone(&self.sstables),
-            compacting_handle: Arc::clone(&self.compacting_handle),
+            compacting_notify: Arc::clone(&self.compacting_notify),
             sstable_dir: self.sstable_dir.clone(),
             memtable_size_target: self.memtable_size_target.clone(),
             compaction_interval: self.compaction_interval.clone(),

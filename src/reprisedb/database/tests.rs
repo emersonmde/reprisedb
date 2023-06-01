@@ -5,13 +5,13 @@ mod tests {
     use crate::models::value;
     use crate::reprisedb::{Database, DatabaseConfigBuilder};
 
-    fn setup() -> Database {
+    async fn setup() -> Database {
         let uuid = Uuid::new_v4();
         let path = format!("/tmp/reprisedb_testdir_{}", uuid);
         let config = DatabaseConfigBuilder::new()
             .sstable_dir(path.clone())
             .build();
-        return Database::new(config).unwrap();
+        return Database::new(config).await.unwrap();
     }
 
     fn teardown(db: Database) {
@@ -22,7 +22,7 @@ mod tests {
     async fn test_new_database() {
         let dir = "/tmp/unique_test_sstable_dir";
         let config = DatabaseConfigBuilder::new().sstable_dir(dir.to_string()).build();
-        let db = Database::new(config).unwrap();
+        let db = Database::new(config).await.unwrap();
 
         assert!(db.memtable.read().await.is_empty());
         assert!(db.sstables.write().await.is_empty());
@@ -34,7 +34,7 @@ mod tests {
     #[tokio::test]
     async fn test_put_get_item() {
         // create database instance, call put, verify that item is added correctly
-        let mut db = setup();
+        let mut db = setup().await;
 
         let int_value = value::Kind::Int(44);
         let float_value = value::Kind::Float(12.2);
@@ -51,7 +51,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_flush_memtable() {
-        let mut db = setup();
+        let mut db = setup().await;
         let test_value = value::Kind::Int(44);
         db.put("test".to_string(), test_value.clone()).await.unwrap();
         db.flush_memtable().await.unwrap();
@@ -64,7 +64,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_item_after_memtable_flush() {
-        let mut db = setup();
+        let mut db = setup().await;
         let test_value = value::Kind::Int(44);
         db.put("test".to_string(), test_value.clone()).await.unwrap();
         db.flush_memtable().await.unwrap();
@@ -76,7 +76,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compact_sstables() {
-        let mut db = setup();
+        let mut db = setup().await;
         for i in 0..125 {
             let key = format!("key{}", i);
             db.put(key, value::Kind::Int(i as i64)).await.unwrap();

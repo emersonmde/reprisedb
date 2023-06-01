@@ -34,11 +34,15 @@ reprisedb = { git = "https://github.com/emersonmde/reprisedb.git", branch = "mai
 ```
 
 ## Todo
-- Add API
 - Create sparse indexes of SSTables to allow for binary search
-- Add multi-layer compaction strategy to better support time series writes
-- Add a bloom filter for each of the SSTables and MemTable to speed up lookups
 - Add a write-ahead log to support crash recovery
+    - Sequential writes to the log and MemTable simultaneously
+    - When the MemTable is full, replace MemTable and log with new ones
+        - Set to 4 KB
+    - Trigger MemTable flush to disk, delete old MemTable and log
+- Add a bloom filter for each of the SSTables and MemTable to speed up lookups
+- Add multi-layer compaction strategy to better support time series writes
+- Add API
 
 ## Documentation
 

@@ -1,4 +1,3 @@
-use std::{fs, io};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,14 +5,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use prost::Message;
-use tokio::fs::File;
-use tokio::io::{AsyncSeekExt, BufReader, BufWriter, SeekFrom};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::RwLock;
+use tokio::fs::{self, File};
+use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
+use tokio::sync::{RwLock, RwLockWriteGuard};
 use uuid::Uuid;
 
 use crate::models;
 use crate::models::value;
+use crate::reprisedb::index::SparseIndex;
 
 /// Struct representing an SSTable (sorted-string table) which is a key-value
 /// storage format with each variable sized row prefixed by a u64 length.
@@ -24,6 +23,7 @@ use crate::models::value;
 #[derive(Debug, Clone)]
 pub struct SSTable {
     pub(crate) path: PathBuf,
+    index: Arc<RwLock<Option<SparseIndex>>>,
     #[allow(dead_code)]
     size: u64,
 }
@@ -38,10 +38,11 @@ impl SSTable {
     /// # Returns
     ///
     /// A result that will be an instance of SSTable  or error.
-    pub fn new(filename: &str) -> std::io::Result<Self> {
-        let metadata = fs::metadata(filename)?;
+    pub async fn new(filename: &str) -> io::Result<Self> {
+        let metadata = fs::metadata(filename).await?;
         Ok(SSTable {
             path: PathBuf::from(filename),
+            index: Arc::new(RwLock::new(None)),
             size: metadata.len(),
         })
     }
@@ -56,7 +57,7 @@ impl SSTable {
     /// # Returns
     ///
     /// A result that will be an instance of SSTable or error.
-    pub async fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> std::io::Result<Self> {
+    pub async fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> io::Result<Self> {
         let filename = Self::get_new_filename(dir);
         let file = File::create(filename.clone()).await?;
         let mut writer = BufWriter::new(file);
@@ -65,7 +66,9 @@ impl SSTable {
         for (key, value) in snapshot {
             let row = models::Row {
                 key: key.clone(),
-                value: Some(models::Value { kind: Some(value.clone()) }),
+                value: Some(models::Value {
+                    kind: Some(value.clone()),
+                }),
             };
 
             let mut bytes = Vec::new();
@@ -79,10 +82,35 @@ impl SSTable {
             writer.write_all(&bytes).await?;
         }
 
+        let index_guard: Arc<RwLock<Option<SparseIndex>>> = Arc::new(RwLock::new(None));
+        let index_clone = Arc::clone(&index_guard);
+        let filename_clone = filename.clone();
+        let index_future = tokio::task::spawn(async move {
+            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> = index_clone
+                .write()
+                .await;
+            let index = SparseIndex::new(&filename_clone, size).await;
+            // TODO: Update this to take a Result once implmented
+            let result = index.build_index().await;
+            // if let Err(e) = result {
+            //     eprintln!("Unable to flush index: {}", e);
+            // }
+
+            let result = index.flush_index().await;
+            if let Err(e) = result {
+                eprintln!("Unable to flush index: {}", e);
+            }
+
+            *index_clone_guard = Some(index);
+        });
+
+        index_future.await?;
+
         writer.flush().await?;
 
         Ok(SSTable {
             path: PathBuf::from(filename),
+            index: index_guard.clone(),
             size,
         })
     }
@@ -148,23 +176,21 @@ impl SSTable {
         let mut kv2 = iter2.next().await;
         while kv1.is_some() || kv2.is_some() {
             match (&kv1, &kv2) {
-                (Some(Ok((k1, v1))), Some(Ok((k2, v2)))) => {
-                    match k1.cmp(k2) {
-                        std::cmp::Ordering::Less => {
-                            Self::write_row(&mut writer, k1, v1).await?;
-                            kv1 = iter1.next().await;
-                        }
-                        std::cmp::Ordering::Greater => {
-                            Self::write_row(&mut writer, k2, v2).await?;
-                            kv2 = iter2.next().await;
-                        }
-                        std::cmp::Ordering::Equal => {
-                            Self::write_row(&mut writer, k1, v1).await?;
-                            kv1 = iter1.next().await;
-                            kv2 = iter2.next().await;
-                        }
+                (Some(Ok((k1, v1))), Some(Ok((k2, v2)))) => match k1.cmp(k2) {
+                    std::cmp::Ordering::Less => {
+                        Self::write_row(&mut writer, k1, v1).await?;
+                        kv1 = iter1.next().await;
                     }
-                }
+                    std::cmp::Ordering::Greater => {
+                        Self::write_row(&mut writer, k2, v2).await?;
+                        kv2 = iter2.next().await;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        Self::write_row(&mut writer, k1, v1).await?;
+                        kv1 = iter1.next().await;
+                        kv2 = iter2.next().await;
+                    }
+                },
                 (Some(Ok((k1, v1))), None) => {
                     Self::write_row(&mut writer, k1, v1).await?;
                     kv1 = iter1.next().await;
@@ -179,15 +205,21 @@ impl SSTable {
 
         writer.flush().await?;
 
-        let sstable = SSTable::new(filename.as_str())?;
+        let sstable = SSTable::new(filename.as_str()).await?;
         Ok(sstable)
     }
 
     /// Encodes a key and value into a Row protobuf message and writes it to the writer.
-    async fn write_row(writer: &mut BufWriter<File>, key: &str, value: &value::Kind) -> io::Result<()> {
+    async fn write_row(
+        writer: &mut BufWriter<File>,
+        key: &str,
+        value: &value::Kind,
+    ) -> io::Result<()> {
         let row = models::Row {
             key: key.to_string(),
-            value: Some(models::Value { kind: Some(value.clone()) }),
+            value: Some(models::Value {
+                kind: Some(value.clone()),
+            }),
         };
 
         let mut bytes = Vec::new();
@@ -201,13 +233,10 @@ impl SSTable {
         Ok(())
     }
 
-
     /// Generates a new filename in the format of "{dir}/Ptimestamp}_{uuid}".
     fn get_new_filename(dir: &str) -> String {
         let now = SystemTime::now();
-        let since_the_epoch = now
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
+        let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
         let filename = format!("{}_{}", since_the_epoch.as_secs(), Uuid::new_v4());
         let path_str = format!("{}/{}", dir, filename);
         path_str
@@ -225,7 +254,6 @@ impl SSTable {
         })
     }
 }
-
 
 /// An iterator over the rows in an SSTable.
 pub struct SSTableIter {
@@ -278,7 +306,6 @@ impl AsyncIterator for SSTableIter {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -299,13 +326,15 @@ mod tests {
 
             memtable.insert(key, value::Kind::Str(value));
         }
-        let sstable = SSTable::create(&sstable_dir, &memtable.clone()).await.unwrap();
+        let sstable = SSTable::create(&sstable_dir, &memtable.clone())
+            .await
+            .unwrap();
         (sstable_dir, sstable, memtable)
     }
 
     async fn teardown(sstable_path: String) {
         println!("Removing {}", sstable_path);
-        fs::remove_dir_all(sstable_path).unwrap();
+        fs::remove_dir_all(sstable_path).await.unwrap();
     }
 
     #[tokio::test]
@@ -318,7 +347,7 @@ mod tests {
     #[tokio::test]
     async fn test_sstable_new() {
         let (sstable_path, _, _) = setup().await;
-        let sstable = SSTable::new(&sstable_path);
+        let sstable = SSTable::new(&sstable_path).await;
         assert!(sstable.is_ok());
         teardown(sstable_path).await;
     }
@@ -334,10 +363,18 @@ mod tests {
         data.insert("key3".to_string(), value::Kind::Str("42".to_string()));
         let sstable = SSTable::create(&sstable_path, &data).await.unwrap();
 
-
-        assert_eq!(sstable.get("key1").await.unwrap().unwrap(), value::Kind::Int(42));
-        assert_eq!(sstable.get("key2").await.unwrap().unwrap(), value::Kind::Float(4.2));
-        assert_eq!(sstable.get("key3").await.unwrap().unwrap(), value::Kind::Str("42".to_string()));
+        assert_eq!(
+            sstable.get("key1").await.unwrap().unwrap(),
+            value::Kind::Int(42)
+        );
+        assert_eq!(
+            sstable.get("key2").await.unwrap().unwrap(),
+            value::Kind::Float(4.2)
+        );
+        assert_eq!(
+            sstable.get("key3").await.unwrap().unwrap(),
+            value::Kind::Str("42".to_string())
+        );
         teardown(sstable_path).await;
     }
 

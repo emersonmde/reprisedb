@@ -7,7 +7,7 @@ mod reprisedb;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let mut db = Database::new(DatabaseConfigBuilder::new().build()).expect("Failed to create database");
+    let mut db = Database::new(DatabaseConfigBuilder::new().build()).await.expect("Failed to create database");
     println!("sstables: {:?}", db.sstables.read().await);
     println!("size: {}\n", db.memtable.read().await.size());
     println!("put key1");
