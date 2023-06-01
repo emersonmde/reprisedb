@@ -89,18 +89,20 @@ impl SSTable {
             index: index_guard.clone(),
             size,
         };
+         
 
         let index_clone = Arc::clone(&index_guard);
         let sstable_clone = sstable.clone();
         let index_future = tokio::task::spawn(async move {
-            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> =
-                index_clone.write().await;
+            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> = index_clone
+                .write()
+                .await;
             let index = match SparseIndex::new(&sstable_clone).await {
                 Ok(index) => index,
                 Err(e) => {
                     eprintln!("Unable to create index: {}", e);
                     return Err(e);
-                }
+                },
             };
             // TODO: Update this to take a Result once implmented
             let result = index.build_index().await;
@@ -122,6 +124,7 @@ impl SSTable {
             eprintln!("Error in index creation: {}", e);
             return Err(e);
         }
+
 
         Ok(sstable)
     }

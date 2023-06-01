@@ -8,7 +8,8 @@ use tokio::fs::File;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::sync::RwLock;
 
-use super::sstable::SSTable;
+use super::sstable::{SSTable, SSTableIter};
+use crate::reprisedb::sstable::AsyncIterator;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyMetadata {
@@ -26,6 +27,7 @@ pub struct SparseIndexData {
 pub struct SparseIndex {
     index: Arc<RwLock<HashMap<String, KeyMetadata>>>,
     file: Arc<RwLock<File>>,
+    sstable: Arc<SSTable>,
     created: chrono::DateTime<Utc>,
     version: u16,
 }
@@ -40,15 +42,25 @@ impl SparseIndex {
         Ok(SparseIndex {
             index: Arc::new(RwLock::new(HashMap::new())),
             file: Arc::new(RwLock::new(file)),
+            sstable: Arc::new(sstable.clone()),
             created: Utc::now(),
             version: 1,
         })
     }
 
-    pub async fn build_index(&self) {
-        let index = self.index.write().await;
-        // Build index
-        // TODO: Build index
+    pub async fn build_index(&self) -> io::Result<()> {
+        let i: u64 = 0;
+        let mut iter: SSTableIter = self.sstable.iter().await?;
+        while let Some(result) = iter.next().await {
+            match result {
+                Ok((key, _)) => {
+                    let mut index_guard = self.index.write().await;
+                    index_guard.insert(key, KeyMetadata { offset: i });
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     pub async fn flush_index(&self) -> std::io::Result<()> {
