@@ -8,8 +8,8 @@ use tokio::fs::File;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::sync::RwLock;
 
-use super::sstable::{SSTable, SSTableIter};
-use crate::reprisedb::sstable::AsyncIterator;
+use crate::reprisedb::sstable::iter::{SSTableIter, AsyncIterator};
+use crate::reprisedb::sstable::SSTable;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyMetadata {
