@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, self};
+use tokio::io::{self, AsyncWriteExt};
 use tokio::sync::RwLock;
+
+use super::sstable::SSTable;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyMetadata {
@@ -16,7 +19,6 @@ pub struct KeyMetadata {
 pub struct SparseIndexData {
     index: HashMap<String, KeyMetadata>,
     created: chrono::DateTime<Utc>,
-    table_size: u64,
     version: u16,
 }
 
@@ -24,23 +26,23 @@ pub struct SparseIndexData {
 pub struct SparseIndex {
     index: Arc<RwLock<HashMap<String, KeyMetadata>>>,
     file: Arc<RwLock<File>>,
-    table_size: u64,
     created: chrono::DateTime<Utc>,
     version: u16,
 }
 
+#[allow(dead_code)]
 impl SparseIndex {
-    pub async fn new(sstable_path: &str, table_size: u64) -> SparseIndex {
-        let file = File::create(format!("{}-index", sstable_path))
+    pub async fn new(sstable: &SSTable) -> io::Result<SparseIndex> {
+        let filename = Self::get_index_filename(&sstable.path)?;
+        let file = File::create(filename)
             .await
             .expect("Unable to create index file");
-        SparseIndex {
+        Ok(SparseIndex {
             index: Arc::new(RwLock::new(HashMap::new())),
             file: Arc::new(RwLock::new(file)),
-            table_size,
             created: Utc::now(),
             version: 1,
-        }
+        })
     }
 
     pub async fn build_index(&self) {
@@ -52,12 +54,10 @@ impl SparseIndex {
     pub async fn flush_index(&self) -> std::io::Result<()> {
         let index = self.index.read().await.clone();
         let created = self.created;
-        let table_size = self.table_size;
         let version = self.version;
         let index_data = SparseIndexData {
             index,
             created,
-            table_size,
             version,
         };
 
@@ -68,10 +68,8 @@ impl SparseIndex {
             Ok(_) => {
                 file.write_all(&writer).await?;
                 Ok(())
-            },
-            Err(e) => {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, e))
-            },
+            }
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
         }
     }
 
@@ -89,9 +87,6 @@ impl SparseIndex {
         let index = self.index.read().await;
         index.is_empty()
     }
-    pub fn table_size(&self) -> u64 {
-        self.table_size
-    }
 
     pub async fn insert(&self, key: String, metadata: KeyMetadata) {
         let mut index = self.index.write().await;
@@ -101,5 +96,15 @@ impl SparseIndex {
     pub async fn remove(&self, key: &str) {
         let mut index = self.index.write().await;
         index.remove(key);
+    }
+
+    fn get_index_filename(sstable_path: &PathBuf) -> io::Result<String> {
+        match sstable_path.to_str() {
+            Some(path_str) => Ok(format!("{}-index", path_str)),
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Path is not valid UTF-8",
+            )),
+        }
     }
 }

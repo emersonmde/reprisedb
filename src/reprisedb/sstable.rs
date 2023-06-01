@@ -83,13 +83,25 @@ impl SSTable {
         }
 
         let index_guard: Arc<RwLock<Option<SparseIndex>>> = Arc::new(RwLock::new(None));
+        writer.flush().await?;
+        let sstable = SSTable {
+            path: PathBuf::from(filename),
+            index: index_guard.clone(),
+            size,
+        };
+
         let index_clone = Arc::clone(&index_guard);
-        let filename_clone = filename.clone();
+        let sstable_clone = sstable.clone();
         let index_future = tokio::task::spawn(async move {
-            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> = index_clone
-                .write()
-                .await;
-            let index = SparseIndex::new(&filename_clone, size).await;
+            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> =
+                index_clone.write().await;
+            let index = match SparseIndex::new(&sstable_clone).await {
+                Ok(index) => index,
+                Err(e) => {
+                    eprintln!("Unable to create index: {}", e);
+                    return Err(e);
+                }
+            };
             // TODO: Update this to take a Result once implmented
             let result = index.build_index().await;
             // if let Err(e) = result {
@@ -102,17 +114,16 @@ impl SSTable {
             }
 
             *index_clone_guard = Some(index);
+            Ok(())
         });
 
-        index_future.await?;
+        let result = index_future.await?;
+        if let Err(e) = result {
+            eprintln!("Error in index creation: {}", e);
+            return Err(e);
+        }
 
-        writer.flush().await?;
-
-        Ok(SSTable {
-            path: PathBuf::from(filename),
-            index: index_guard.clone(),
-            size,
-        })
+        Ok(sstable)
     }
 
     /// Get a value from the SSTable based on a key.

@@ -40,6 +40,7 @@ reprisedb = { git = "https://github.com/emersonmde/reprisedb.git", branch = "mai
     - When the MemTable is full, replace MemTable and log with new ones
         - Set to 4 KB
     - Trigger MemTable flush to disk, delete old MemTable and log
+- Add an MANIFEST file for SSTables
 - Add a bloom filter for each of the SSTables and MemTable to speed up lookups
 - Add multi-layer compaction strategy to better support time series writes
 - Add API

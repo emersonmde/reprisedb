@@ -9,12 +9,11 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{Duration, interval};
+use tokio::time::{interval, Duration};
 
 use crate::models::value;
 use crate::reprisedb::memtable::MemTable;
 use crate::reprisedb::sstable;
-
 
 pub struct DatabaseConfig {
     pub memtable_size_target: usize,
@@ -117,7 +116,10 @@ impl Database {
         for path in Self::get_files_by_modified_date(&sstable_dir)?.iter().rev() {
             let os_path_str = path.clone().into_os_string();
             let path_str = os_path_str.into_string().map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("Invalid file path: {:?}", e))
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid file path: {:?}", e),
+                )
             })?;
             sstables.push(sstable::SSTable::new(&path_str).await?);
         }
@@ -364,7 +366,11 @@ impl Database {
         }
 
         let remaining_len = self.sstables.read().await.len();
-        println!("Successfully completed compacting {} SSTables. {} SSTables remaining.", len - remaining_len, remaining_len);
+        println!(
+            "Successfully completed compacting {} SSTables. {} SSTables remaining.",
+            len - remaining_len,
+            remaining_len
+        );
 
         Ok(())
     }
@@ -377,13 +383,18 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error if the compaction process fails.
-    pub async fn start_compacting(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let compacting_notify = self.compacting_notify.clone();
+    pub async fn start_compacting(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut compacting_notify_guard = self.compacting_notify.lock().await;
         match &*compacting_notify_guard {
             Some(_) => {
                 println!("Compaction process already running!");
-                return Err(io::Error::new(io::ErrorKind::Other, "Compaction process already running!").into());
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Compaction process already running!",
+                )
+                .into());
             }
             None => {}
         }
@@ -405,7 +416,9 @@ impl Database {
         Ok(())
     }
 
-    pub async fn wait_for_compaction(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn wait_for_compaction(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let compacting_notify = self.compacting_notify.clone();
         let compacting_notify_guard = compacting_notify.lock().await;
 
@@ -417,7 +430,6 @@ impl Database {
 
         Ok(())
     }
-
 
     /// Shuts down the database, ensuring that the current memtable is flushed to disk.
     ///
@@ -450,7 +462,10 @@ impl Database {
         }
         match self.wait_for_compaction().await {
             Ok(_) => (),
-            Err(e) => eprintln!("Failed to wait for compaction to complete on shutdown: {}", e),
+            Err(e) => eprintln!(
+                "Failed to wait for compaction to complete on shutdown: {}",
+                e
+            ),
         }
     }
 
@@ -484,4 +499,3 @@ impl Clone for Database {
         }
     }
 }
-
