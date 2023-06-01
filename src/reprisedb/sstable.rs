@@ -8,6 +8,7 @@ use prost::Message;
 use tokio::fs::{self, File};
 use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
 use tokio::sync::{RwLock, RwLockWriteGuard};
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::models;
@@ -23,6 +24,7 @@ use crate::reprisedb::index::SparseIndex;
 #[derive(Debug, Clone)]
 pub struct SSTable {
     pub(crate) path: PathBuf,
+    #[allow(dead_code)]
     index: Arc<RwLock<Option<SparseIndex>>>,
     #[allow(dead_code)]
     size: u64,
@@ -57,7 +59,7 @@ impl SSTable {
     /// # Returns
     ///
     /// A result that will be an instance of SSTable or error.
-    pub async fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> io::Result<Self> {
+    pub async fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> io::Result<(Self, JoinHandle<io::Result<()>>)> {
         let filename = Self::get_new_filename(dir);
         let file = File::create(filename.clone()).await?;
         let mut writer = BufWriter::new(file);
@@ -82,51 +84,17 @@ impl SSTable {
             writer.write_all(&bytes).await?;
         }
 
-        let index_guard: Arc<RwLock<Option<SparseIndex>>> = Arc::new(RwLock::new(None));
+        let index: Arc<RwLock<Option<SparseIndex>>> = Arc::new(RwLock::new(None));
         writer.flush().await?;
         let sstable = SSTable {
             path: PathBuf::from(filename),
-            index: index_guard.clone(),
+            index: index.clone(),
             size,
         };
-         
 
-        let index_clone = Arc::clone(&index_guard);
-        let sstable_clone = sstable.clone();
-        let index_future = tokio::task::spawn(async move {
-            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> = index_clone
-                .write()
-                .await;
-            let index = match SparseIndex::new(&sstable_clone).await {
-                Ok(index) => index,
-                Err(e) => {
-                    eprintln!("Unable to create index: {}", e);
-                    return Err(e);
-                },
-            };
-            // TODO: Update this to take a Result once implmented
-            let result = index.build_index().await;
-            // if let Err(e) = result {
-            //     eprintln!("Unable to flush index: {}", e);
-            // }
+        let index_future = Self::create_index(index, &sstable);
 
-            let result = index.flush_index().await;
-            if let Err(e) = result {
-                eprintln!("Unable to flush index: {}", e);
-            }
-
-            *index_clone_guard = Some(index);
-            Ok(())
-        });
-
-        let result = index_future.await?;
-        if let Err(e) = result {
-            eprintln!("Error in index creation: {}", e);
-            return Err(e);
-        }
-
-
-        Ok(sstable)
+        Ok((sstable, index_future))
     }
 
     /// Get a value from the SSTable based on a key.
@@ -267,7 +235,38 @@ impl SSTable {
             buf: Vec::new(),
         })
     }
+
+    fn create_index(index: Arc<RwLock<Option<SparseIndex>>>, sstable: &SSTable) -> JoinHandle<Result<(), io::Error>> {
+        let index_clone = Arc::clone(&index);
+        let sstable_clone = sstable.clone();
+        tokio::task::spawn(async move {
+            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> = index_clone
+                .write()
+                .await;
+            let index = match SparseIndex::new(&sstable_clone).await {
+                Ok(index) => index,
+                Err(e) => {
+                    eprintln!("Unable to create index: {}", e);
+                    return Err(e);
+                },
+            };
+            // TODO: Update this to take a Result once implmented
+            let result = index.build_index().await;
+            if let Err(e) = result {
+                eprintln!("Unable to buildindex: {}", e);
+            }
+
+            let result = index.flush_index().await;
+            if let Err(e) = result {
+                eprintln!("Unable to flush index: {}", e);
+            }
+
+            *index_clone_guard = Some(index);
+            Ok(())
+        })
+    }
 }
+
 
 /// An iterator over the rows in an SSTable.
 pub struct SSTableIter {
@@ -326,6 +325,8 @@ mod tests {
 
     use rand::Rng;
 
+    use crate::reprisedb::index;
+
     use super::*;
 
     async fn setup() -> (String, SSTable, BTreeMap<String, value::Kind>) {
@@ -340,9 +341,10 @@ mod tests {
 
             memtable.insert(key, value::Kind::Str(value));
         }
-        let sstable = SSTable::create(&sstable_dir, &memtable.clone())
+        let (sstable, index_handle) = SSTable::create(&sstable_dir, &memtable.clone())
             .await
             .unwrap();
+        index_handle.await.unwrap().unwrap();
         (sstable_dir, sstable, memtable)
     }
 
@@ -375,7 +377,7 @@ mod tests {
         data.insert("key1".to_string(), value::Kind::Int(42));
         data.insert("key2".to_string(), value::Kind::Float(4.2));
         data.insert("key3".to_string(), value::Kind::Str("42".to_string()));
-        let sstable = SSTable::create(&sstable_path, &data).await.unwrap();
+        let (sstable, _) = SSTable::create(&sstable_path, &data).await.unwrap();
 
         assert_eq!(
             sstable.get("key1").await.unwrap().unwrap(),
