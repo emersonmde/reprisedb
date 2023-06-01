@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use uuid::Uuid;
     use crate::models::value;
     use crate::reprisedb::{Database, DatabaseConfigBuilder};
+    use std::fs;
+    use uuid::Uuid;
 
     async fn setup() -> Database {
         let uuid = Uuid::new_v4();
@@ -21,7 +21,9 @@ mod tests {
     #[tokio::test]
     async fn test_new_database() {
         let dir = "/tmp/unique_test_sstable_dir";
-        let config = DatabaseConfigBuilder::new().sstable_dir(dir.to_string()).build();
+        let config = DatabaseConfigBuilder::new()
+            .sstable_dir(dir.to_string())
+            .build();
         let db = Database::new(config).await.unwrap();
 
         assert!(db.memtable.read().await.is_empty());
@@ -40,8 +42,12 @@ mod tests {
         let float_value = value::Kind::Float(12.2);
         let string_value = value::Kind::Str("Test".to_string());
         db.put("int".to_string(), int_value.clone()).await.unwrap();
-        db.put("float".to_string(), float_value.clone()).await.unwrap();
-        db.put("string".to_string(), string_value.clone()).await.unwrap();
+        db.put("float".to_string(), float_value.clone())
+            .await
+            .unwrap();
+        db.put("string".to_string(), string_value.clone())
+            .await
+            .unwrap();
         assert_eq!(&db.get("int").await.unwrap().unwrap(), &int_value);
         assert_eq!(&db.get("float").await.unwrap().unwrap(), &float_value);
         assert_eq!(&db.get("string").await.unwrap().unwrap(), &string_value);
@@ -53,7 +59,9 @@ mod tests {
     async fn test_flush_memtable() {
         let mut db = setup().await;
         let test_value = value::Kind::Int(44);
-        db.put("test".to_string(), test_value.clone()).await.unwrap();
+        db.put("test".to_string(), test_value.clone())
+            .await
+            .unwrap();
         db.flush_memtable().await.unwrap();
 
         assert!(db.memtable.read().await.is_empty());
@@ -66,7 +74,9 @@ mod tests {
     async fn test_get_item_after_memtable_flush() {
         let mut db = setup().await;
         let test_value = value::Kind::Int(44);
-        db.put("test".to_string(), test_value.clone()).await.unwrap();
+        db.put("test".to_string(), test_value.clone())
+            .await
+            .unwrap();
         db.flush_memtable().await.unwrap();
 
         assert_eq!(&db.get("test").await.unwrap().unwrap(), &test_value);
@@ -97,7 +107,10 @@ mod tests {
 
         for i in 0..200 {
             let key = format!("key{}", i);
-            assert_eq!(&db.get(&key).await.unwrap().unwrap(), &value::Kind::Int(i as i64));
+            assert_eq!(
+                &db.get(&key).await.unwrap().unwrap(),
+                &value::Kind::Int(i as i64)
+            );
         }
 
         teardown(db);

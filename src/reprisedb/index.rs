@@ -8,7 +8,7 @@ use tokio::fs::File;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::sync::RwLock;
 
-use crate::reprisedb::sstable::iter::{SSTableIter, AsyncIterator};
+use crate::reprisedb::sstable::iter::{AsyncIterator, SSTableIter};
 use crate::reprisedb::sstable::SSTable;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

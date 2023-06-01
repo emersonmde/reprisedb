@@ -1,6 +1,5 @@
-use std::time::Duration;
 use crate::reprisedb::DatabaseConfig;
-
+use std::time::Duration;
 
 pub struct DatabaseConfigBuilder {
     memtable_size_target: Option<usize>,

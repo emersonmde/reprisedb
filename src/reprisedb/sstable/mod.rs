@@ -14,7 +14,7 @@ use crate::models;
 use crate::models::value;
 use crate::reprisedb::index::SparseIndex;
 
-use self::iter::{SSTableIter, AsyncIterator};
+use self::iter::{AsyncIterator, SSTableIter};
 
 pub mod iter;
 
@@ -62,7 +62,10 @@ impl SSTable {
     /// # Returns
     ///
     /// A result that will be an instance of SSTable or error.
-    pub async fn create(dir: &str, snapshot: &BTreeMap<String, value::Kind>) -> io::Result<(Self, JoinHandle<io::Result<()>>)> {
+    pub async fn create(
+        dir: &str,
+        snapshot: &BTreeMap<String, value::Kind>,
+    ) -> io::Result<(Self, JoinHandle<io::Result<()>>)> {
         let filename = Self::get_new_filename(dir);
         let file = File::create(filename.clone()).await?;
         let mut writer = BufWriter::new(file);
@@ -236,23 +239,25 @@ impl SSTable {
         Ok(SSTableIter {
             buf_reader,
             buf: Vec::new(),
-            offset
+            offset,
         })
     }
 
-    fn create_index(index: Arc<RwLock<Option<SparseIndex>>>, sstable: &SSTable) -> JoinHandle<Result<(), io::Error>> {
+    fn create_index(
+        index: Arc<RwLock<Option<SparseIndex>>>,
+        sstable: &SSTable,
+    ) -> JoinHandle<Result<(), io::Error>> {
         let index_clone = Arc::clone(&index);
         let sstable_clone = sstable.clone();
         tokio::task::spawn(async move {
-            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> = index_clone
-                .write()
-                .await;
+            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> =
+                index_clone.write().await;
             let index = match SparseIndex::new(&sstable_clone).await {
                 Ok(index) => index,
                 Err(e) => {
                     eprintln!("Unable to create index: {}", e);
                     return Err(e);
-                },
+                }
             };
             // TODO: Update this to take a Result once implmented
             let result = index.build_index().await;
@@ -270,4 +275,3 @@ impl SSTable {
         })
     }
 }
-

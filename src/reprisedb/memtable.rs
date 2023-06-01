@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 use crate::models::{value, ValueKindSize};
+use std::collections::BTreeMap;
 
 /// MemTable is an in-memory data structure for storing key-value pairs.
 /// This struct is used as a write buffer in the LSM tree implementation.
@@ -12,7 +12,10 @@ pub struct MemTable {
 impl MemTable {
     /// Create a new MemTable.
     pub fn new() -> Self {
-        MemTable { memtable: BTreeMap::new(), size: 0 }
+        MemTable {
+            memtable: BTreeMap::new(),
+            size: 0,
+        }
     }
 
     /// Put a key-value pair into the MemTable.
@@ -55,7 +58,6 @@ impl MemTable {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,6 +97,6 @@ mod tests {
         memtable.put("foo".to_string(), value::Kind::Int(42));
         assert_eq!(memtable.size(), 3 + 8); // 3 for "foo", 8 for the i64
         memtable.put("bar".to_string(), value::Kind::Int(100));
-        assert_eq!(memtable.size(), 2*(3 + 8)); // Now two keys and two i64 values
+        assert_eq!(memtable.size(), 2 * (3 + 8)); // Now two keys and two i64 values
     }
 }

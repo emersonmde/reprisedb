@@ -7,7 +7,6 @@ pub enum Value {
     String(String),
 }
 
-
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
