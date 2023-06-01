@@ -12,6 +12,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
 
 use crate::models::value;
+use crate::reprisedb::index::SparseIndex;
 use crate::reprisedb::memtable::MemTable;
 use crate::reprisedb::sstable;
 
@@ -60,7 +61,6 @@ pub struct DatabaseConfig {
 pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
-    // pub compacting_notify: Arc<Mutex<Option<JoinHandle<Result<(), io::Error>>>>>,
     pub compacting_notify: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
 
     // Options
@@ -192,8 +192,9 @@ impl Database {
         let mut memtable_guard = self.memtable.write().await;
         memtable_guard.put(key, value);
         drop(memtable_guard);
-        if self.memtable.read().await.size() > self.memtable_size_target {
-            println!("Memtable size exceeded target. Flushing memtable.");
+        let memtable_size = self.memtable.read().await.size();
+        if memtable_size > self.memtable_size_target {
+            println!("Memtable size {} exceeded target {}. Flushing memtable.", memtable_size, self.memtable_size_target);
             self.flush_memtable().await?;
         }
         Ok(())
@@ -331,6 +332,7 @@ impl Database {
         // get_sstable_files returns files sorted by modified date, newest to oldest. Calling
         // reverse here will allow us to pop the newest file
         for i in (1..len).rev() {
+            println!("Start compaction");
             let latest = {
                 let sstables_guard = self.sstables.read().await;
                 sstables_guard[i].clone()
@@ -354,13 +356,30 @@ impl Database {
 
             match result {
                 Ok(_) => {
+                    println!("SSTables updated with new file, deleting old files");
                     // Delete the files associated with the two SSTables that were merged
-                    fs::remove_file(latest.path)?;
-                    fs::remove_file(second_latest.path)?;
+                    fs::remove_file(&latest.path)?;
+                    fs::remove_file(&second_latest.path)?;
+
+                    let mut latest_index_handle = latest.index.write().await;
+                    if let Some(_) = latest_index_handle.as_ref() {
+                        *latest_index_handle = None;
+                        let index_file_path = SparseIndex::get_index_filename(&latest.path)?;
+                        fs::remove_file(index_file_path)?;
+                    }
+                    let mut second_latest_index_handle = second_latest.index.write().await;
+                    if let Some(_) = second_latest_index_handle.as_ref() {
+                        *second_latest_index_handle = None;
+                        let index_file_path = SparseIndex::get_index_filename(&second_latest.path)?;
+                        fs::remove_file(index_file_path)?;
+                    }
+
                 }
                 Err(err) => {
+                    println!("Compaction process failed, rolling back");
                     // Handle the error, perform rollback
                     *self.sstables.write().await = sstables_backup.write().await.clone();
+                    println!("Compaction process failed, roll back complete");
                     return Err(err);
                 }
             }
@@ -399,38 +418,50 @@ impl Database {
             }
             None => {}
         }
-
+    
         let notify = Arc::new(tokio::sync::Notify::new());
         let notify_clone = notify.clone();
-
+    
         let mut db_clone = self.clone();
+    
+        *compacting_notify_guard = Some(notify);
+        drop(compacting_notify_guard);
+    
         tokio::spawn(async move {
             let result = db_clone.compact_sstables().await;
             if let Err(e) = &result {
                 eprintln!("Failed to compact sstables: {}", e);
             }
+            // TODO: remove
+            println!("db_clone.compact_sstables() completed successfully.");
             notify_clone.notify_one();
+    
+            // Reset compacting_notify after compaction is done
+            let mut compacting_notify_guard = db_clone.compacting_notify.lock().await;
+            *compacting_notify_guard = None;
+            drop(compacting_notify_guard);
+    
             result
         });
-
-        *compacting_notify_guard = Some(notify);
+    
         Ok(())
     }
+    
 
     pub async fn wait_for_compaction(
         &mut self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let compacting_notify = self.compacting_notify.clone();
-        let compacting_notify_guard = compacting_notify.lock().await;
-
+    
         // If a compaction process is running, we wait for it to notify us that it's done
-        if let Some(notify) = &*compacting_notify_guard {
+        if let Some(notify) = compacting_notify.lock().await.as_ref() {
             notify.notified().await;
             println!("Compaction process completed successfully.");
         }
-
+    
         Ok(())
     }
+    
 
     /// Shuts down the database, ensuring that the current memtable is flushed to disk.
     ///

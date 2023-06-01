@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,21 +18,20 @@ pub struct KeyMetadata {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SparseIndexData {
-    index: HashMap<String, KeyMetadata>,
+    index: BTreeMap<String, KeyMetadata>,
     created: chrono::DateTime<Utc>,
     version: u16,
 }
 
 #[derive(Debug)]
 pub struct SparseIndex {
-    index: Arc<RwLock<HashMap<String, KeyMetadata>>>,
-    file: Arc<RwLock<File>>,
+    index: Arc<RwLock<BTreeMap<String, KeyMetadata>>>,
+    pub file: Arc<RwLock<File>>,
     sstable: Arc<SSTable>,
     created: chrono::DateTime<Utc>,
     version: u16,
 }
 
-#[allow(dead_code)]
 impl SparseIndex {
     pub async fn new(sstable: &SSTable) -> io::Result<SparseIndex> {
         let filename = Self::get_index_filename(&sstable.path)?;
@@ -40,7 +39,7 @@ impl SparseIndex {
             .await
             .expect("Unable to create index file");
         Ok(SparseIndex {
-            index: Arc::new(RwLock::new(HashMap::new())),
+            index: Arc::new(RwLock::new(BTreeMap::new())),
             file: Arc::new(RwLock::new(file)),
             sstable: Arc::new(sstable.clone()),
             created: Utc::now(),
@@ -50,7 +49,11 @@ impl SparseIndex {
 
     pub async fn build_index(&self) -> io::Result<()> {
         let mut iter: SSTableIter = self.sstable.iter().await?;
+        let mut i: u64 = 0;
         while let Some(result) = iter.next_with_offset().await {
+            if i % 100 != 0 {
+                continue;
+            }
             match result {
                 (offset, Ok((key, _))) => {
                     let mut index_guard = self.index.write().await;
@@ -58,6 +61,7 @@ impl SparseIndex {
                 }
                 (_, Err(e)) => return Err(e),
             }
+            i += 1;
         }
         Ok(())
     }
@@ -84,32 +88,20 @@ impl SparseIndex {
         }
     }
 
-    pub async fn get(&self, key: &str) -> Option<KeyMetadata> {
-        let index = self.index.read().await;
-        index.get(key).cloned()
+    pub async fn get_nearest_offset(&self, key: &str) -> Option<u64> {
+        let index= self.index.read().await;
+        let key = key.to_owned();
+        // Get an iterator over all keys up to and including the given key
+        let range = index.range(..= key);
+
+        // The last element in the range is the largest key less than or equal to the given key
+        if let Some((_, metadata)) = range.last() {
+            return Some(metadata.offset);
+        }
+        None
     }
 
-    pub async fn len(&self) -> usize {
-        let index = self.index.read().await;
-        index.len()
-    }
-
-    pub async fn is_empty(&self) -> bool {
-        let index = self.index.read().await;
-        index.is_empty()
-    }
-
-    pub async fn insert(&self, key: String, metadata: KeyMetadata) {
-        let mut index = self.index.write().await;
-        index.insert(key, metadata);
-    }
-
-    pub async fn remove(&self, key: &str) {
-        let mut index = self.index.write().await;
-        index.remove(key);
-    }
-
-    fn get_index_filename(sstable_path: &PathBuf) -> io::Result<String> {
+    pub fn get_index_filename(sstable_path: &PathBuf) -> io::Result<String> {
         match sstable_path.to_str() {
             Some(path_str) => Ok(format!("{}-index", path_str)),
             None => Err(io::Error::new(

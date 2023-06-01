@@ -28,7 +28,7 @@ pub mod iter;
 pub struct SSTable {
     pub(crate) path: PathBuf,
     #[allow(dead_code)]
-    index: Arc<RwLock<Option<SparseIndex>>>,
+    pub index: Arc<RwLock<Option<SparseIndex>>>,
     #[allow(dead_code)]
     size: u64,
 }
@@ -90,16 +90,14 @@ impl SSTable {
             writer.write_all(&bytes).await?;
         }
 
-        let index: Arc<RwLock<Option<SparseIndex>>> = Arc::new(RwLock::new(None));
         writer.flush().await?;
         let sstable = SSTable {
             path: PathBuf::from(filename),
-            index: index.clone(),
+            index:  Arc::new(RwLock::new(None)),
             size,
         };
 
-        let index_future = Self::create_index(index, &sstable);
-
+        let index_future = sstable.create_index();
         Ok((sstable, index_future))
     }
 
@@ -115,7 +113,16 @@ impl SSTable {
     /// found, or an error if the operation failed. The option will be None
     /// if the key was not found in the SSTable.
     pub async fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
-        let mut iter = self.iter().await?;
+        if self.index.read().await.is_some() {}
+        let mut offset: u64 = 0;
+        if let Some(index) = self.index.read().await.as_ref() {
+            if let Some(nearest_offset) = index.get_nearest_offset(key).await {
+                offset = nearest_offset
+            }
+
+        }
+
+        let mut iter = self.iter_at_offset(offset).await?;
 
         while let Some(result) = iter.next().await {
             match result {
@@ -194,6 +201,7 @@ impl SSTable {
         writer.flush().await?;
 
         let sstable = SSTable::new(filename.as_str()).await?;
+        sstable.create_index().await?;
         Ok(sstable)
     }
 
@@ -231,9 +239,9 @@ impl SSTable {
     }
 
     /// Creates an iterator over the rows in the SSTable.
-    pub async fn iter(&self) -> io::Result<SSTableIter> {
+    pub async fn iter_at_offset(&self, offset: u64) -> io::Result<SSTableIter> {
         let mut file = File::open(&self.path).await?;
-        let offset = file.seek(SeekFrom::Start(0)).await?;
+        let offset = file.seek(SeekFrom::Start(offset)).await?;
         let buf_reader = Arc::new(RwLock::new(BufReader::new(file)));
 
         Ok(SSTableIter {
@@ -243,12 +251,15 @@ impl SSTable {
         })
     }
 
+    pub async fn iter(&self) -> io::Result<SSTableIter> {
+        self.iter_at_offset(0).await
+    }
+
     fn create_index(
-        index: Arc<RwLock<Option<SparseIndex>>>,
-        sstable: &SSTable,
+        &self,
     ) -> JoinHandle<Result<(), io::Error>> {
-        let index_clone = Arc::clone(&index);
-        let sstable_clone = sstable.clone();
+        let index_clone = Arc::clone(&self.index);
+        let sstable_clone = self.clone();
         tokio::task::spawn(async move {
             let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> =
                 index_clone.write().await;

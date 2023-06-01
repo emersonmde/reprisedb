@@ -59,12 +59,13 @@ impl AsyncIterator for SSTableIter {
                             }
                         };
 
-                        self.offset += 8 + len;
 
-                        Some((
+                        let result = Some((
                             self.offset,
                             Ok((row.key, row.value.map(|v| v.kind.unwrap()).unwrap())),
-                        ))
+                        ));
+                        self.offset += 8 + len;
+                        result
                     }
                     Err(e) => Some((self.offset, Err(e))),
                 }
