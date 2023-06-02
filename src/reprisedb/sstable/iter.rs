@@ -7,6 +7,7 @@ use tokio::{
     io::{self, AsyncReadExt, BufReader},
     sync::RwLock,
 };
+use tracing::instrument;
 
 use crate::models;
 

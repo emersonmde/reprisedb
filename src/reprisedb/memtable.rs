@@ -1,11 +1,13 @@
+use tracing::instrument;
+
 use crate::models::{value, ValueKindSize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// MemTable is an in-memory data structure for storing key-value pairs.
 /// This struct is used as a write buffer in the LSM tree implementation.
 #[derive(Debug, Clone)]
 pub struct MemTable {
-    memtable: BTreeMap<String, value::Kind>,
+    memtable: HashMap<String, value::Kind>,
     size: usize,
 }
 
@@ -13,7 +15,7 @@ impl MemTable {
     /// Create a new MemTable.
     pub fn new() -> Self {
         MemTable {
-            memtable: BTreeMap::new(),
+            memtable: HashMap::new(),
             size: 0,
         }
     }
@@ -23,6 +25,7 @@ impl MemTable {
     /// Arguments:
     /// * `key` - The key to insert.
     /// * `value` - The value to insert.
+    #[instrument]
     pub fn put(&mut self, key: String, value: value::Kind) {
         self.size += key.len() + value.size();
         self.memtable.insert(key, value);
@@ -32,6 +35,7 @@ impl MemTable {
     ///
     /// Arguments:
     /// * `key` - The key to get.
+    #[instrument]
     pub fn get(&self, key: &str) -> Option<&value::Kind> {
         self.memtable.get(key)
     }
@@ -53,8 +57,9 @@ impl MemTable {
     }
 
     /// Return a reference to the MemTable's BTreeMap.
+    #[instrument]
     pub fn snapshot(&self) -> BTreeMap<String, value::Kind> {
-        self.memtable.clone()
+        self.memtable.clone().into_iter().collect()
     }
 }
 

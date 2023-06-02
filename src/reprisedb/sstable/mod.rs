@@ -8,6 +8,7 @@ use tokio::fs::{self, File};
 use tokio::io::{self, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use tokio::task::JoinHandle;
+use tracing::instrument;
 use uuid::Uuid;
 
 use crate::models;
@@ -43,6 +44,7 @@ impl SSTable {
     /// # Returns
     ///
     /// A result that will be an instance of SSTable  or error.
+    #[instrument]
     pub async fn new(filename: &str) -> io::Result<Self> {
         let metadata = fs::metadata(filename).await?;
         Ok(SSTable {
@@ -62,6 +64,7 @@ impl SSTable {
     /// # Returns
     ///
     /// A result that will be an instance of SSTable or error.
+    #[instrument]
     pub async fn create(
         dir: &str,
         snapshot: &BTreeMap<String, value::Kind>,
@@ -112,6 +115,7 @@ impl SSTable {
     /// A result that will be an option containing the value if the key was
     /// found, or an error if the operation failed. The option will be None
     /// if the key was not found in the SSTable.
+    #[instrument]
     pub async fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
         let mut offset: u64 = 0;  
         let index_opt = self.index.read().await;
@@ -150,6 +154,7 @@ impl SSTable {
     /// A result that will be an instance of SSTable if the SSTables were
     /// successfully merged and written to a file, or an error if the
     /// operation failed.
+    #[instrument]
     pub async fn merge(&self, sstable: &SSTable, dir: &str) -> io::Result<SSTable> {
         let mut iter1 = match self.iter().await {
             Ok(iter) => iter,
@@ -209,6 +214,7 @@ impl SSTable {
     }
 
     /// Encodes a key and value into a Row protobuf message and writes it to the writer.
+    #[instrument]
     async fn write_row(
         writer: &mut BufWriter<File>,
         key: &str,
@@ -258,6 +264,7 @@ impl SSTable {
         self.iter_at_offset(0).await
     }
 
+    #[instrument]
     fn create_index(
         &self,
     ) -> JoinHandle<Result<(), io::Error>> {

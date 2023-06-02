@@ -11,6 +11,7 @@ use std::time::SystemTime;
 use tokio::sync::Semaphore;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
+use tracing::instrument;
 
 use crate::models::value;
 use crate::reprisedb::index::SparseIndex;
@@ -193,6 +194,7 @@ impl Database {
     ///     fs::remove_dir_all("/tmp/mydb3").expect("Failed to remove directory");
     /// }
     /// ```
+    #[instrument]
     pub async fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
         let mut memtable_guard = self.memtable.write().await;
         memtable_guard.put(key, value);
@@ -259,6 +261,7 @@ impl Database {
     ///     fs::remove_dir_all("/tmp/mydb5").expect("Failed to remove directory");
     /// }
     /// ```
+    #[instrument]
     pub async fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
         let memtable_guard = self.memtable.read().await;
         if let Some(value) = memtable_guard.get(key) {
@@ -313,6 +316,7 @@ impl Database {
     ///     fs::remove_dir_all("/tmp/mydb6").expect("Failed to remove directory");
     /// }
     /// ```
+    #[instrument]
     pub async fn flush_memtable(&mut self) -> std::io::Result<()> {
         println!("Flushing memtable");
         
@@ -360,6 +364,7 @@ impl Database {
     /// # Errors
     ///
     /// This function will return an `io::Error` if any I/O operation fails during the process.
+    #[instrument]
     pub async fn compact_sstables(&mut self) -> io::Result<()> {
         let sstables_backup = self.sstables.clone();
 
@@ -445,6 +450,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error if the compaction process fails.
+    #[instrument]
     pub async fn start_compacting(
         &mut self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -503,7 +509,7 @@ impl Database {
         Ok(())
     }
     
-
+    #[instrument]
     pub async fn wait_for_compaction(
         &mut self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -518,7 +524,6 @@ impl Database {
         Ok(())
     }
     
-
     /// Shuts down the database, ensuring that the current memtable is flushed to disk.
     ///
     /// This method should be called prior to the application exiting to ensure that all in-memory data
@@ -544,6 +549,7 @@ impl Database {
     ///     fs::remove_dir_all("/tmp/mydb7").expect("Failed to remove directory");
     /// }
     /// ```
+    #[instrument]
     pub async fn shutdown(&mut self) {
         match self.flush_memtable().await {
             Ok(_) => (),
