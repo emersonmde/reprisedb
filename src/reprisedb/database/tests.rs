@@ -62,6 +62,7 @@ mod tests {
         db.put("test".to_string(), test_value.clone())
             .await
             .unwrap();
+
         db.flush_memtable().await.unwrap();
 
         assert!(db.memtable.read().await.is_empty());

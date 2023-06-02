@@ -34,7 +34,7 @@ reprisedb = { git = "https://github.com/emersonmde/reprisedb.git", branch = "mai
 ```
 
 ## Todo
-- Create sparse indexes of SSTables to allow for binary search
+- Handle shutdown gracefully, stopping reads/writes before flushing
 - Add a write-ahead log to support crash recovery
     - Sequential writes to the log and MemTable simultaneously
     - When the MemTable is full, replace MemTable and log with new ones

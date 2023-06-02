@@ -48,21 +48,26 @@ impl SparseIndex {
     }
 
     pub async fn build_index(&self) -> io::Result<()> {
+        println!("Building index for {}", self.sstable.path.display());
         let mut iter: SSTableIter = self.sstable.iter().await?;
         let mut i: u64 = 0;
+        let mut num_keys: u64 = 0;
         while let Some(result) = iter.next_with_offset().await {
-            if i % 100 != 0 {
+            if i % 10 != 0 {
+                i += 1;
                 continue;
             }
             match result {
                 (offset, Ok((key, _))) => {
                     let mut index_guard = self.index.write().await;
                     index_guard.insert(key, KeyMetadata { offset });
+                    num_keys += 1;
                 }
                 (_, Err(e)) => return Err(e),
             }
             i += 1;
         }
+        println!("Completed building index with {} keys for {}", num_keys, self.sstable.path.display());
         Ok(())
     }
 

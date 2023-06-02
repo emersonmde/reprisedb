@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use tokio::sync::Semaphore;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
 
@@ -20,6 +21,7 @@ pub struct DatabaseConfig {
     pub memtable_size_target: usize,
     pub sstable_dir: String,
     pub compaction_interval: Duration,
+    pub num_concurrent_reads: usize,
 }
 
 /// A simple LSM (Log-Structured Merge-tree) database.
@@ -62,6 +64,7 @@ pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
     pub compacting_notify: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    pub get_semaphore: Arc<tokio::sync::Semaphore>,
 
     // Options
     pub sstable_dir: String,
@@ -106,6 +109,7 @@ impl Database {
         let sstable_dir = config.sstable_dir;
         let memtable_size_target = config.memtable_size_target;
         let compaction_interval = config.compaction_interval;
+        let num_concurrent_reads = config.num_concurrent_reads;
 
         let sstable_path = Path::new(&sstable_dir);
         if !sstable_path.exists() {
@@ -130,6 +134,7 @@ impl Database {
             memtable,
             sstables: Arc::new(RwLock::new(sstables)),
             compacting_notify: Arc::new(Mutex::new(None)),
+            get_semaphore: Arc::new(Semaphore::new(num_concurrent_reads)),
             sstable_dir: sstable_dir.clone(),
             memtable_size_target,
             compaction_interval,
@@ -191,11 +196,27 @@ impl Database {
     pub async fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
         let mut memtable_guard = self.memtable.write().await;
         memtable_guard.put(key, value);
-        drop(memtable_guard);
-        let memtable_size = self.memtable.read().await.size();
+        let memtable_size = memtable_guard.size();
         if memtable_size > self.memtable_size_target {
             println!("Memtable size {} exceeded target {}. Flushing memtable.", memtable_size, self.memtable_size_target);
-            self.flush_memtable().await?;
+            let snapshot = {
+                println!("Creating new MemTable and updating reference");
+                // Create new memtable and swap it with the old one
+                let new_memtable = MemTable::new();
+                let old_memtable = std::mem::replace(&mut *memtable_guard, new_memtable);
+
+                println!("Taking snapshot");
+                old_memtable.snapshot()
+            };
+    
+            println!("Snapshot complete, found {} entries", snapshot.len());
+            println!("Creating SSTable from MemTable and writing to disk");
+            let (sstable, _) = sstable::SSTable::create(&self.sstable_dir, &snapshot).await?;
+    
+            println!("Updating SSTable list");
+            self.sstables.write().await.push(sstable);
+    
+            println!("Finished flushing");
         }
         Ok(())
     }
@@ -239,10 +260,13 @@ impl Database {
     /// }
     /// ```
     pub async fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
-        if let Some(value) = self.memtable.read().await.get(key) {
+        let memtable_guard = self.memtable.read().await;
+        if let Some(value) = memtable_guard.get(key) {
             return Ok(Some(value.clone()));
         }
+        drop(memtable_guard);
 
+        let _permit = self.get_semaphore.acquire().await;
         for sstable in self.sstables.read().await.iter().rev() {
             if let Some(value) = sstable.get(key).await? {
                 return Ok(Some(value));
@@ -290,16 +314,34 @@ impl Database {
     /// }
     /// ```
     pub async fn flush_memtable(&mut self) -> std::io::Result<()> {
-        let mut memtable = self.memtable.write().await;
-        if memtable.is_empty() {
-            return Ok(());
-        }
-        let (sstable, _) =
-            sstable::SSTable::create(&self.sstable_dir, &memtable.get_memtable()).await?;
+        println!("Flushing memtable");
+        
+        let snapshot = {
+            let mut memtable_guard = self.memtable.write().await;
+            // Create new memtable and swap it with the old one
+            let new_memtable = MemTable::new();
+            let old_memtable = std::mem::replace(&mut *memtable_guard, new_memtable);
+
+            println!("Taking snapshot");
+
+            // Check if it's empty
+            if old_memtable.is_empty() {
+                return Ok(());
+            }
+            old_memtable.snapshot()
+        };
+
+        println!("Snapshot complete, found {} entries", snapshot.len());
+        println!("Creating SSTable");
+        let (sstable, _) = sstable::SSTable::create(&self.sstable_dir, &snapshot).await?;
+
+        println!("Updating SSTable");
         self.sstables.write().await.push(sstable);
-        memtable.clear();
+
+        println!("Finished flushing");
         Ok(())
     }
+
 
     /// Initiates compaction of `SSTables` in the database.
     ///
@@ -406,7 +448,7 @@ impl Database {
     pub async fn start_compacting(
         &mut self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut compacting_notify_guard = self.compacting_notify.lock().await;
+        let compacting_notify_guard = self.compacting_notify.lock().await;
         match &*compacting_notify_guard {
             Some(_) => {
                 println!("Compaction process already running!");
@@ -423,9 +465,23 @@ impl Database {
         let notify_clone = notify.clone();
     
         let mut db_clone = self.clone();
-    
-        *compacting_notify_guard = Some(notify);
-        drop(compacting_notify_guard);
+
+        {
+            let mut compacting_notify_guard = self.compacting_notify.lock().await;
+            match &*compacting_notify_guard {
+                Some(_) => {
+                    println!("Compaction process already running!");
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Compaction process already running!",
+                    )
+                    .into());
+                }
+                None => {
+                    *compacting_notify_guard = Some(notify);
+                }
+            }
+        }
     
         tokio::spawn(async move {
             let result = db_clone.compact_sstables().await;
@@ -526,6 +582,7 @@ impl Clone for Database {
             memtable: Arc::clone(&self.memtable),
             sstables: Arc::clone(&self.sstables),
             compacting_notify: Arc::clone(&self.compacting_notify),
+            get_semaphore: Arc::clone(&self.get_semaphore),
             sstable_dir: self.sstable_dir.clone(),
             memtable_size_target: self.memtable_size_target.clone(),
             compaction_interval: self.compaction_interval.clone(),

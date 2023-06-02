@@ -53,8 +53,8 @@ impl MemTable {
     }
 
     /// Return a reference to the MemTable's BTreeMap.
-    pub fn get_memtable(&self) -> &BTreeMap<String, value::Kind> {
-        &self.memtable
+    pub fn snapshot(&self) -> BTreeMap<String, value::Kind> {
+        self.memtable.clone()
     }
 }
 

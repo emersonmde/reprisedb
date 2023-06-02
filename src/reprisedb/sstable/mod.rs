@@ -113,14 +113,13 @@ impl SSTable {
     /// found, or an error if the operation failed. The option will be None
     /// if the key was not found in the SSTable.
     pub async fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
-        if self.index.read().await.is_some() {}
-        let mut offset: u64 = 0;
-        if let Some(index) = self.index.read().await.as_ref() {
-            if let Some(nearest_offset) = index.get_nearest_offset(key).await {
-                offset = nearest_offset
-            }
-
-        }
+        let mut offset: u64 = 0;  
+        let index_opt = self.index.read().await;
+        if let Some(index) = index_opt.as_ref() {  
+          if let Some(nearest_offset) = index.get_nearest_offset(key).await {  
+            offset = nearest_offset  
+          }  
+        }  
 
         let mut iter = self.iter_at_offset(offset).await?;
 
@@ -201,7 +200,11 @@ impl SSTable {
         writer.flush().await?;
 
         let sstable = SSTable::new(filename.as_str()).await?;
-        sstable.create_index().await?;
+        // TODO: Retry index creation if it fails?
+        if let Err(e) = sstable.create_index().await? {
+            eprintln!("Failed to create index for merged SSTable: {}", e);
+        }
+        
         Ok(sstable)
     }
 
@@ -261,8 +264,6 @@ impl SSTable {
         let index_clone = Arc::clone(&self.index);
         let sstable_clone = self.clone();
         tokio::task::spawn(async move {
-            let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> =
-                index_clone.write().await;
             let index = match SparseIndex::new(&sstable_clone).await {
                 Ok(index) => index,
                 Err(e) => {
@@ -270,7 +271,6 @@ impl SSTable {
                     return Err(e);
                 }
             };
-            // TODO: Update this to take a Result once implmented
             let result = index.build_index().await;
             if let Err(e) = result {
                 eprintln!("Unable to buildindex: {}", e);
@@ -281,7 +281,11 @@ impl SSTable {
                 eprintln!("Unable to flush index: {}", e);
             }
 
-            *index_clone_guard = Some(index);
+            {
+                let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> = index_clone.write().await;
+                *index_clone_guard = Some(index);
+            }
+
             Ok(())
         })
     }
