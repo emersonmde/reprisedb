@@ -46,6 +46,5 @@ async fn main() -> std::io::Result<()> {
 
     db.shutdown().await;
 
-
     Ok(())
 }
