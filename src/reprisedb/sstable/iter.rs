@@ -5,15 +5,14 @@ use prost::Message;
 use tokio::{
     fs::File,
     io::{self, AsyncReadExt, BufReader},
-    sync::RwLock,
+    sync::Mutex,
 };
-use tracing::instrument;
 
 use crate::models;
 
 pub struct SSTableIter {
-    pub buf_reader: Arc<RwLock<BufReader<File>>>,
-    pub buf: Vec<u8>,
+    pub buf_reader: Arc<Mutex<BufReader<File>>>,
+    pub buf: Arc<Mutex<Vec<u8>>>,
     pub offset: u64,
 }
 
@@ -35,9 +34,7 @@ impl AsyncIterator for SSTableIter {
     }
 
     async fn next_with_offset(&mut self) -> Option<(u64, Self::Item)> {
-        self.buf.clear();
-
-        let mut buf_reader = self.buf_reader.write().await;
+        let mut buf_reader = self.buf_reader.lock().await;
 
         // Read the length of the protobuf message (assuming it was written as a u64)
         let mut len_buf = [0u8; 8];
@@ -46,11 +43,11 @@ impl AsyncIterator for SSTableIter {
                 let len = u64::from_be_bytes(len_buf);
 
                 // Then read that number of bytes into the buffer
-                self.buf.resize(len as usize, 0);
-
-                match buf_reader.read_exact(&mut self.buf).await {
+                // buf.resize(len as usize, 0);
+                let mut buf = vec![0u8; len as usize];
+                match buf_reader.read_exact(&mut buf).await {
                     Ok(_) => {
-                        let row: models::Row = match models::Row::decode(self.buf.as_slice()) {
+                        let row: models::Row = match models::Row::decode(buf.as_slice()) {
                             Ok(row) => row,
                             Err(e) => {
                                 return Some((
@@ -59,7 +56,6 @@ impl AsyncIterator for SSTableIter {
                                 ))
                             }
                         };
-
 
                         let result = Some((
                             self.offset,

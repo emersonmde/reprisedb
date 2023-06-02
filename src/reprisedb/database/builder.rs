@@ -37,7 +37,7 @@ impl DatabaseConfigBuilder {
         self.compaction_interval = Some(interval);
         self
     }
-    
+
     /// This method is used to set the number of concurrent reads
     pub fn num_concurrent_reads(mut self, num: usize) -> Self {
         self.num_concurrent_reads = Some(num);

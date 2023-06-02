@@ -67,7 +67,11 @@ impl SparseIndex {
             }
             i += 1;
         }
-        println!("Completed building index with {} keys for {}", num_keys, self.sstable.path.display());
+        println!(
+            "Completed building index with {} keys for {}",
+            num_keys,
+            self.sstable.path.display()
+        );
         Ok(())
     }
 
@@ -94,10 +98,10 @@ impl SparseIndex {
     }
 
     pub async fn get_nearest_offset(&self, key: &str) -> Option<u64> {
-        let index= self.index.read().await;
+        let index = self.index.read().await;
         let key = key.to_owned();
         // Get an iterator over all keys up to and including the given key
-        let range = index.range(..= key);
+        let range = index.range(..=key);
 
         // The last element in the range is the largest key less than or equal to the given key
         if let Some((_, metadata)) = range.last() {
@@ -108,7 +112,7 @@ impl SparseIndex {
 
     pub fn get_index_filename(sstable_path: &PathBuf) -> io::Result<String> {
         match sstable_path.to_str() {
-            Some(path_str) => Ok(format!("{}-index", path_str)),
+            Some(path_str) => Ok(format!("{}.index", path_str)),
             None => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Path is not valid UTF-8",

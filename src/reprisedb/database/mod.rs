@@ -1,6 +1,7 @@
 pub mod builder;
 pub mod tests;
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -118,7 +119,13 @@ impl Database {
         }
 
         let mut sstables = Vec::new();
-        for path in Self::get_files_by_modified_date(&sstable_dir)?.iter().rev() {
+        for path in Self::get_files_by_modified_date(&sstable_dir)?
+            .iter()
+            .filter(|file| {
+                file.is_file() && !(file.extension().unwrap_or(OsStr::new("")) == "index")
+            })
+            .rev()
+        {
             let os_path_str = path.clone().into_os_string();
             let path_str = os_path_str.into_string().map_err(|e| {
                 io::Error::new(
@@ -200,7 +207,10 @@ impl Database {
         memtable_guard.put(key, value);
         let memtable_size = memtable_guard.size();
         if memtable_size > self.memtable_size_target {
-            println!("Memtable size {} exceeded target {}. Flushing memtable.", memtable_size, self.memtable_size_target);
+            println!(
+                "Memtable size {} exceeded target {}. Flushing memtable.",
+                memtable_size, self.memtable_size_target
+            );
             let snapshot = {
                 println!("Creating new MemTable and updating reference");
                 // Create new memtable and swap it with the old one
@@ -210,14 +220,14 @@ impl Database {
                 println!("Taking snapshot");
                 old_memtable.snapshot()
             };
-    
+
             println!("Snapshot complete, found {} entries", snapshot.len());
             println!("Creating SSTable from MemTable and writing to disk");
             let (sstable, _) = sstable::SSTable::create(&self.sstable_dir, &snapshot).await?;
-    
+
             println!("Updating SSTable list");
             self.sstables.write().await.push(sstable);
-    
+
             println!("Finished flushing");
         }
         Ok(())
@@ -319,7 +329,7 @@ impl Database {
     #[instrument]
     pub async fn flush_memtable(&mut self) -> std::io::Result<()> {
         println!("Flushing memtable");
-        
+
         let snapshot = {
             let mut memtable_guard = self.memtable.write().await;
             // Create new memtable and swap it with the old one
@@ -345,7 +355,6 @@ impl Database {
         println!("Finished flushing");
         Ok(())
     }
-
 
     /// Initiates compaction of `SSTables` in the database.
     ///
@@ -420,7 +429,6 @@ impl Database {
                         let index_file_path = SparseIndex::get_index_filename(&second_latest.path)?;
                         fs::remove_file(index_file_path)?;
                     }
-
                 }
                 Err(err) => {
                     println!("Compaction process failed, rolling back");
@@ -466,10 +474,10 @@ impl Database {
             }
             None => {}
         }
-    
+
         let notify = Arc::new(tokio::sync::Notify::new());
         let notify_clone = notify.clone();
-    
+
         let mut db_clone = self.clone();
 
         {
@@ -488,7 +496,7 @@ impl Database {
                 }
             }
         }
-    
+
         tokio::spawn(async move {
             let result = db_clone.compact_sstables().await;
             if let Err(e) = &result {
@@ -497,33 +505,33 @@ impl Database {
             // TODO: remove
             println!("db_clone.compact_sstables() completed successfully.");
             notify_clone.notify_one();
-    
+
             // Reset compacting_notify after compaction is done
             let mut compacting_notify_guard = db_clone.compacting_notify.lock().await;
             *compacting_notify_guard = None;
             drop(compacting_notify_guard);
-    
+
             result
         });
-    
+
         Ok(())
     }
-    
+
     #[instrument]
     pub async fn wait_for_compaction(
         &mut self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let compacting_notify = self.compacting_notify.clone();
-    
+
         // If a compaction process is running, we wait for it to notify us that it's done
         if let Some(notify) = compacting_notify.lock().await.as_ref() {
             notify.notified().await;
             println!("Compaction process completed successfully.");
         }
-    
+
         Ok(())
     }
-    
+
     /// Shuts down the database, ensuring that the current memtable is flushed to disk.
     ///
     /// This method should be called prior to the application exiting to ensure that all in-memory data

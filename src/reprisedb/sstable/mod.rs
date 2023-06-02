@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use prost::Message;
 use tokio::fs::{self, File};
 use tokio::io::{self, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
-use tokio::sync::{RwLock, RwLockWriteGuard};
+use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
 use tokio::task::JoinHandle;
 use tracing::instrument;
 use uuid::Uuid;
@@ -96,7 +96,7 @@ impl SSTable {
         writer.flush().await?;
         let sstable = SSTable {
             path: PathBuf::from(filename),
-            index:  Arc::new(RwLock::new(None)),
+            index: Arc::new(RwLock::new(None)),
             size,
         };
 
@@ -117,13 +117,13 @@ impl SSTable {
     /// if the key was not found in the SSTable.
     #[instrument]
     pub async fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
-        let mut offset: u64 = 0;  
+        let mut offset: u64 = 0;
         let index_opt = self.index.read().await;
-        if let Some(index) = index_opt.as_ref() {  
-          if let Some(nearest_offset) = index.get_nearest_offset(key).await {  
-            offset = nearest_offset  
-          }  
-        }  
+        if let Some(index) = index_opt.as_ref() {
+            if let Some(nearest_offset) = index.get_nearest_offset(key).await {
+                offset = nearest_offset
+            }
+        }
 
         let mut iter = self.iter_at_offset(offset).await?;
 
@@ -156,6 +156,7 @@ impl SSTable {
     /// operation failed.
     #[instrument]
     pub async fn merge(&self, sstable: &SSTable, dir: &str) -> io::Result<SSTable> {
+        println!("Merging SSTables");
         let mut iter1 = match self.iter().await {
             Ok(iter) => iter,
             Err(e) => return Err(e),
@@ -170,10 +171,13 @@ impl SSTable {
 
         let file = File::create(&filename).await?;
         let mut writer = BufWriter::new(file);
+        println!("Created file {}", filename);
 
         let mut kv1 = iter1.next().await;
         let mut kv2 = iter2.next().await;
+        println!("kv1: {:?}, kv2: {:?}", kv1, kv2);
         while kv1.is_some() || kv2.is_some() {
+            println!("kv1: {:?}, kv2: {:?}", kv1, kv2);
             match (&kv1, &kv2) {
                 (Some(Ok((k1, v1))), Some(Ok((k2, v2)))) => match k1.cmp(k2) {
                     std::cmp::Ordering::Less => {
@@ -209,7 +213,7 @@ impl SSTable {
         if let Err(e) = sstable.create_index().await? {
             eprintln!("Failed to create index for merged SSTable: {}", e);
         }
-        
+
         Ok(sstable)
     }
 
@@ -251,11 +255,11 @@ impl SSTable {
     pub async fn iter_at_offset(&self, offset: u64) -> io::Result<SSTableIter> {
         let mut file = File::open(&self.path).await?;
         let offset = file.seek(SeekFrom::Start(offset)).await?;
-        let buf_reader = Arc::new(RwLock::new(BufReader::new(file)));
+        let buf_reader = Arc::new(Mutex::new(BufReader::new(file)));
 
         Ok(SSTableIter {
             buf_reader,
-            buf: Vec::new(),
+            buf: Arc::new(Mutex::new(Vec::new())),
             offset,
         })
     }
@@ -265,9 +269,7 @@ impl SSTable {
     }
 
     #[instrument]
-    fn create_index(
-        &self,
-    ) -> JoinHandle<Result<(), io::Error>> {
+    fn create_index(&self) -> JoinHandle<Result<(), io::Error>> {
         let index_clone = Arc::clone(&self.index);
         let sstable_clone = self.clone();
         tokio::task::spawn(async move {
@@ -289,7 +291,8 @@ impl SSTable {
             }
 
             {
-                let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> = index_clone.write().await;
+                let mut index_clone_guard: RwLockWriteGuard<Option<SparseIndex>> =
+                    index_clone.write().await;
                 *index_clone_guard = Some(index);
             }
 
