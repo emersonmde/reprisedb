@@ -124,9 +124,9 @@ impl SSTable {
                 offset = nearest_offset
             }
         }
+        drop(index_opt);
 
         let mut iter = self.iter_at_offset(offset).await?;
-
         while let Some(result) = iter.next().await {
             match result {
                 Ok((row_key, value)) => {

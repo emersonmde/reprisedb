@@ -53,7 +53,7 @@ impl SparseIndex {
         let mut i: u64 = 0;
         let mut num_keys: u64 = 0;
         while let Some(result) = iter.next_with_offset().await {
-            if i % 10 != 0 {
+            if i % 2 != 0 {
                 i += 1;
                 continue;
             }

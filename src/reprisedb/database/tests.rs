@@ -26,7 +26,7 @@ mod tests {
             .build();
         let db = Database::new(config).await.unwrap();
 
-        assert!(db.hot_memtable.read().await.is_empty());
+        assert!(db.memtable.read().await.is_empty());
         assert!(db.sstables.write().await.is_empty());
         assert_eq!(db.sstable_dir, dir);
 
@@ -65,7 +65,7 @@ mod tests {
 
         db.flush_memtable().await.unwrap();
 
-        assert!(db.hot_memtable.read().await.is_empty());
+        assert!(db.memtable.read().await.is_empty());
         assert!(!db.sstables.write().await.is_empty());
 
         teardown(db);
