@@ -7,6 +7,7 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::SystemTime;
 
 use tokio::sync::Semaphore;
@@ -63,9 +64,14 @@ pub struct DatabaseConfig {
 /// ```
 #[derive(Debug)]
 pub struct Database {
-    pub memtable: Arc<RwLock<MemTable>>,
+    pub hot_memtable: Arc<RwLock<MemTable>>,
+    // pub cold_memtable: Arc<MemTable>,
+    // pub switch_lock: RwLock<()>,
+    // pub is_switching: AtomicBool,
+
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
     pub compacting_notify: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    // TODO: Limit reads in RwLock
     pub get_semaphore: Arc<tokio::sync::Semaphore>,
 
     // Options
@@ -139,7 +145,7 @@ impl Database {
         let memtable = Arc::new(RwLock::new(MemTable::new()));
 
         let database = Database {
-            memtable,
+            hot_memtable: memtable,
             sstables: Arc::new(RwLock::new(sstables)),
             compacting_notify: Arc::new(Mutex::new(None)),
             get_semaphore: Arc::new(Semaphore::new(num_concurrent_reads)),
@@ -203,8 +209,8 @@ impl Database {
     /// ```
     #[instrument]
     pub async fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
-        let mut memtable_guard = self.memtable.write().await;
-        memtable_guard.put(key, value);
+        let mut memtable_guard = self.hot_memtable.write().await;
+        memtable_guard.put(key, value).await;
         let memtable_size = memtable_guard.size();
         if memtable_size > self.memtable_size_target {
             println!(
@@ -218,7 +224,7 @@ impl Database {
                 let old_memtable = std::mem::replace(&mut *memtable_guard, new_memtable);
 
                 println!("Taking snapshot");
-                old_memtable.snapshot()
+                old_memtable.snapshot().await
             };
 
             println!("Snapshot complete, found {} entries", snapshot.len());
@@ -273,8 +279,8 @@ impl Database {
     /// ```
     #[instrument]
     pub async fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
-        let memtable_guard = self.memtable.read().await;
-        if let Some(value) = memtable_guard.get(key) {
+        let memtable_guard = self.hot_memtable.read().await;
+        if let Some(value) = memtable_guard.get(key).await {
             return Ok(Some(value.clone()));
         }
         drop(memtable_guard);
@@ -331,7 +337,7 @@ impl Database {
         println!("Flushing memtable");
 
         let snapshot = {
-            let mut memtable_guard = self.memtable.write().await;
+            let mut memtable_guard = self.hot_memtable.write().await;
             // Create new memtable and swap it with the old one
             let new_memtable = MemTable::new();
             let old_memtable = std::mem::replace(&mut *memtable_guard, new_memtable);
@@ -342,7 +348,7 @@ impl Database {
             if old_memtable.is_empty() {
                 return Ok(());
             }
-            old_memtable.snapshot()
+            old_memtable.snapshot().await
         };
 
         println!("Snapshot complete, found {} entries", snapshot.len());
@@ -593,7 +599,7 @@ impl Database {
 impl Clone for Database {
     fn clone(&self) -> Self {
         Database {
-            memtable: Arc::clone(&self.memtable),
+            hot_memtable: Arc::clone(&self.hot_memtable),
             sstables: Arc::clone(&self.sstables),
             compacting_notify: Arc::clone(&self.compacting_notify),
             get_semaphore: Arc::clone(&self.get_semaphore),
