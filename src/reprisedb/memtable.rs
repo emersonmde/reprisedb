@@ -28,8 +28,10 @@ impl MemTable {
     /// * `value` - The value to insert.
     pub async fn put(&mut self, key: String, value: value::Kind) {
         let mut memtable = self.memtable.write().await;
-        self.size.fetch_add(key.len() + value.size(), Ordering::SeqCst);
-        memtable.insert(key, value);
+        if !memtable.contains_key(&key) {
+            self.size.fetch_add(key.len() + value.size(), Ordering::SeqCst);
+            memtable.insert(key, value);
+        }
     }
 
     /// Get a value from the MemTable.
