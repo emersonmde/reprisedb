@@ -7,7 +7,6 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::SystemTime;
 
 use tokio::sync::Semaphore;
@@ -75,6 +74,7 @@ pub struct Database {
     pub sstable_dir: String,
     memtable_size_target: usize,
     compaction_interval: Duration,
+    // TODO: Add SSTable target size
 }
 
 impl Database {

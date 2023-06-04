@@ -44,6 +44,8 @@ reprisedb = { git = "https://github.com/emersonmde/reprisedb.git", branch = "mai
 - Add a bloom filter for each of the SSTables and MemTable to speed up lookups
 - Add multi-layer compaction strategy to better support time series writes
 - Add API
+- Change compaction to keep tiers of data based on modification date
+  - These should stay below 64MB
 
 ## Documentation
 
