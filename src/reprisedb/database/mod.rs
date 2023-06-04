@@ -24,6 +24,7 @@ pub struct DatabaseConfig {
     pub sstable_dir: String,
     pub compaction_interval: Duration,
     pub num_concurrent_reads: usize,
+    pub max_reads: usize,
 }
 
 /// A simple LSM (Log-Structured Merge-tree) database.
@@ -143,7 +144,7 @@ impl Database {
 
         let database = Database {
             memtable,
-            sstables: Arc::new(RwLock::new(sstables)),
+            sstables: Arc::new(RwLock::with_max_readers(sstables, config.max_reads as u32)),
             compacting_notify: Arc::new(Mutex::new(None)),
             get_semaphore: Arc::new(Semaphore::new(num_concurrent_reads)),
             sstable_dir: sstable_dir.clone(),
