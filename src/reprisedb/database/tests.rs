@@ -108,8 +108,16 @@ mod tests {
 
         for i in 0..200 {
             let key = format!("key{}", i);
+            let value = &db.get(&key).await.unwrap();
+            if let Some(value) = value {
+                if value != &value::Kind::Int(i as i64) {
+                    println!("equal key: {}, value: {:?}", key, value);
+                }
+            } else {
+                println!("missing key: {}", key);
+            }
             assert_eq!(
-                &db.get(&key).await.unwrap().unwrap(),
+                value.as_ref().unwrap(),
                 &value::Kind::Int(i as i64)
             );
         }

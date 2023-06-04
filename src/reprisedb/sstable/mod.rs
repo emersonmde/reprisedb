@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
 use tokio::task::JoinHandle;
 use tracing::instrument;
 use uuid::Uuid;
+use bloombox::BloomBox;
 
 use crate::models;
 use crate::models::value;
@@ -32,6 +33,7 @@ pub struct SSTable {
     pub index: Arc<RwLock<Option<SparseIndex>>>,
     #[allow(dead_code)]
     size: u64,
+    bloom_filter: Arc<RwLock<BloomBox>>,
 }
 
 impl SSTable {
@@ -47,11 +49,27 @@ impl SSTable {
     #[instrument]
     pub async fn new(filename: &str) -> io::Result<Self> {
         let metadata = fs::metadata(filename).await?;
-        Ok(SSTable {
+        let bloom_filter = Arc::new(RwLock::new(BloomBox::with_rate(0.01, 1 * 1024 * 1024)));
+        let bloom_filter_clone = Arc::clone(&bloom_filter);
+        let sstable = SSTable {
             path: PathBuf::from(filename),
             index: Arc::new(RwLock::new(None)),
             size: metadata.len(),
-        })
+            bloom_filter,
+        };
+        let mut iter = sstable.iter().await?;
+        let mut bloom_filter_guard = bloom_filter_clone.write().await;
+        while let Some(item) = iter.next().await {
+            match item {
+                Ok((key, _)) => {
+                    bloom_filter_guard.insert(&key);
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            }
+        }
+        Ok(sstable)
     }
 
     /// Create a new SSTable from a memtable reference.
@@ -72,8 +90,10 @@ impl SSTable {
         let file = File::create(filename.clone()).await?;
         let mut writer = BufWriter::new(file);
         let mut size: u64 = 0;
+        let mut bloom_filter = BloomBox::with_rate(0.01, 1 * 1024 * 1024);
 
         for (key, value) in snapshot {
+            bloom_filter.insert(key);
             let row = models::Row {
                 key: key.clone(),
                 value: Some(models::Value {
@@ -97,6 +117,7 @@ impl SSTable {
             path: PathBuf::from(filename),
             index: Arc::new(RwLock::new(None)),
             size,
+            bloom_filter: Arc::new(RwLock::new(bloom_filter)),
         };
 
         let index_future = sstable.create_index();
@@ -116,6 +137,12 @@ impl SSTable {
     /// if the key was not found in the SSTable.
     pub async fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
         let mut offset: u64 = 0;
+        {
+            let bloom_filter = self.bloom_filter.read().await;
+            if !bloom_filter.contains(&key) {
+                return Ok(None);
+            }
+        }
         let index_opt = self.index.read().await;
         if let Some(index) = index_opt.as_ref() {
             if let Some(nearest_offset) = index.get_nearest_offset(key).await {
@@ -172,9 +199,7 @@ impl SSTable {
 
         let mut kv1 = iter1.next().await;
         let mut kv2 = iter2.next().await;
-        println!("kv1: {:?}, kv2: {:?}", kv1, kv2);
         while kv1.is_some() || kv2.is_some() {
-            println!("kv1: {:?}, kv2: {:?}", kv1, kv2);
             match (&kv1, &kv2) {
                 (Some(Ok((k1, v1))), Some(Ok((k2, v2)))) => match k1.cmp(k2) {
                     std::cmp::Ordering::Less => {

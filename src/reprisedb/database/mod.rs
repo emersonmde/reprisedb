@@ -49,7 +49,7 @@ pub struct DatabaseConfig {
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb1".to_string()).build();
+///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test1".to_string()).build();
 ///     let mut db = Database::new(config).await.expect("Database initialization failed");
 ///
 ///     db.put("my_key".to_string(), Kind::Str("my_value".to_string())).await.expect("Put operation failed");
@@ -58,7 +58,7 @@ pub struct DatabaseConfig {
 ///     assert_eq!(value, Some(Kind::Str("my_value".to_string())));
 ///
 ///     db.shutdown().await;
-///     fs::remove_dir_all("/tmp/mydb1").expect("Failed to remove directory");
+///     fs::remove_dir_all("/tmp/reprisedb_test1").expect("Failed to remove directory");
 /// }
 /// ```
 #[derive(Debug)]
@@ -103,11 +103,11 @@ impl Database {
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb2".to_string()).build();
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test2".to_string()).build();
     ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     // ...
     ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
-    ///     fs::remove_dir_all("/tmp/mydb2").expect("Failed to remove directory");
+    ///     fs::remove_dir_all("/tmp/reprisedb_test2").expect("Failed to remove directory");
     /// }
     /// ```
     pub async fn new(config: DatabaseConfig) -> io::Result<Self> {
@@ -197,11 +197,11 @@ impl Database {
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb3".to_string()).build();
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test3".to_string()).build();
     ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     db.put("my_key".to_string(), Kind::Int(42)).await.expect("Failed to insert key-value pair");
     ///     db.shutdown().await;
-    ///     fs::remove_dir_all("/tmp/mydb3").expect("Failed to remove directory");
+    ///     fs::remove_dir_all("/tmp/reprisedb_test3").expect("Failed to remove directory");
     /// }
     /// ```
     #[instrument]
@@ -263,7 +263,7 @@ impl Database {
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb5".to_string()).build();
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test5".to_string()).build();
     ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     match db.get("my_key").await {
     ///         Ok(Some(value)) => println!("Retrieved value: {:?}", value),
@@ -271,7 +271,7 @@ impl Database {
     ///         Err(e) => eprintln!("Failed to retrieve key: {}", e),
     ///     }
     ///     db.shutdown().await;
-    ///     fs::remove_dir_all("/tmp/mydb5").expect("Failed to remove directory");
+    ///     fs::remove_dir_all("/tmp/reprisedb_test5").expect("Failed to remove directory");
     /// }
     /// ```
     #[instrument]
@@ -320,7 +320,7 @@ impl Database {
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb6".to_string()).build();
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test6".to_string()).build();
     ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
     ///     match db.flush_memtable().await {
@@ -328,33 +328,28 @@ impl Database {
     ///         Err(e) => eprintln!("Failed to flush memtable: {}", e),
     ///     }
     ///     db.shutdown().await;
-    ///     fs::remove_dir_all("/tmp/mydb6").expect("Failed to remove directory");
+    ///     fs::remove_dir_all("/tmp/reprisedb_test6").expect("Failed to remove directory");
     /// }
     /// ```
     #[instrument]
     pub async fn flush_memtable(&mut self) -> std::io::Result<()> {
         println!("Flushing memtable");
-
+        let mut memtable_guard = self.memtable.write().await;
         let snapshot = {
-            let mut memtable_guard = self.memtable.write().await;
+            println!("Creating new MemTable and updating reference");
             // Create new memtable and swap it with the old one
             let new_memtable = MemTable::new();
             let old_memtable = std::mem::replace(&mut *memtable_guard, new_memtable);
 
             println!("Taking snapshot");
-
-            // Check if it's empty
-            if old_memtable.is_empty() {
-                return Ok(());
-            }
             old_memtable.snapshot().await
         };
 
         println!("Snapshot complete, found {} entries", snapshot.len());
-        println!("Creating SSTable");
+        println!("Creating SSTable from MemTable and writing to disk");
         let (sstable, _) = sstable::SSTable::create(&self.sstable_dir, &snapshot).await?;
 
-        println!("Updating SSTable");
+        println!("Updating SSTable list");
         self.sstables.write().await.push(sstable);
 
         println!("Finished flushing");
@@ -555,11 +550,11 @@ impl Database {
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/mydb7".to_string()).build();
+    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test7".to_string()).build();
     ///     let mut db = Database::new(config).await.expect("Database initialization failed");
     ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
     ///     db.shutdown().await;
-    ///     fs::remove_dir_all("/tmp/mydb7").expect("Failed to remove directory");
+    ///     fs::remove_dir_all("/tmp/reprisedb_test7").expect("Failed to remove directory");
     /// }
     /// ```
     #[instrument]
