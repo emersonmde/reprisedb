@@ -165,6 +165,7 @@ impl Database {
             let mut interval = interval(db_clone.compaction_interval);
             loop {
                 interval.tick().await;
+                println!("Starting compaction process...");
                 match db_clone.start_compacting().await {
                     Ok(_) => println!("Compaction completed."),
                     Err(e) => eprintln!("Compaction failed: {:?}", e),
@@ -463,19 +464,6 @@ impl Database {
     pub async fn start_compacting(
         &mut self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let compacting_notify_guard = self.compacting_notify.lock().await;
-        match &*compacting_notify_guard {
-            Some(_) => {
-                println!("Compaction process already running!");
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Compaction process already running!",
-                )
-                .into());
-            }
-            None => {}
-        }
-
         let notify = Arc::new(tokio::sync::Notify::new());
         let notify_clone = notify.clone();
 
@@ -504,8 +492,7 @@ impl Database {
             if let Err(e) = &result {
                 eprintln!("Failed to compact sstables: {}", e);
             }
-            // TODO: remove
-            println!("db_clone.compact_sstables() completed successfully.");
+            println!("SSTable compaction completed successfully");
             notify_clone.notify_one();
 
             // Reset compacting_notify after compaction is done
