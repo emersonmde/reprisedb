@@ -374,8 +374,8 @@ impl Database {
     /// # Errors
     ///
     /// This function will return an `io::Error` if any I/O operation fails during the process.
-    #[instrument]
     pub async fn compact_sstables(&mut self) -> io::Result<()> {
+        println!("Starting compact_sstables");
         let sstables_backup = self.sstables.clone();
 
         // Get a read lock on self.sstables
@@ -498,6 +498,7 @@ impl Database {
             }
         }
 
+        println!("Spawning compaction process");
         tokio::spawn(async move {
             let result = db_clone.compact_sstables().await;
             if let Err(e) = &result {
