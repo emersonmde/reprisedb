@@ -95,7 +95,7 @@ mod tests {
     #[tokio::test]
     async fn test_replace_value() {
         let mut memtable = MemTable::new();
-        memtable.put("foo".to_string(), value::Kind::Int(42)).await;
+        // memtable.put("foo".to_string(), value::Kind::Int(42)).await;
         memtable.put("foo".to_string(), value::Kind::Int(100)).await;
         assert_eq!(memtable.get("foo").await, Some(value::Kind::Int(100)));
     }

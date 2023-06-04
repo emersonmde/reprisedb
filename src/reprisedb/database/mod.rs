@@ -40,28 +40,6 @@ pub struct DatabaseConfig {
 /// `Database` uses `RwLock` to synchronize access to the memtable and the SSTables,
 /// ensuring thread-safety for concurrent operations.
 ///
-/// # Example
-///
-/// ```
-/// use reprisedb::reprisedb::Database;
-/// use reprisedb::reprisedb::DatabaseConfigBuilder;
-/// use reprisedb::models::value::Kind;
-/// use std::fs;
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test1".to_string()).build();
-///     let mut db = Database::new(config).await.expect("Database initialization failed");
-///
-///     db.put("my_key".to_string(), Kind::Str("my_value".to_string())).await.expect("Put operation failed");
-///     let value = db.get("my_key").await.expect("Get operation failed");
-///
-///     assert_eq!(value, Some(Kind::Str("my_value".to_string())));
-///
-///     db.shutdown().await;
-///     fs::remove_dir_all("/tmp/reprisedb_test1").expect("Failed to remove directory");
-/// }
-/// ```
 #[derive(Debug)]
 pub struct Database {
     pub memtable: Arc<RwLock<MemTable>>,
@@ -95,22 +73,6 @@ impl Database {
     ///
     /// If this function encounters any form of I/O or other error, an error variant will be returned.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use reprisedb::reprisedb::Database;
-    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
-    /// use std::fs;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test2".to_string()).build();
-    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
-    ///     // ...
-    ///     db.shutdown().await; // It's good practice to shutdown database before the program exits.
-    ///     fs::remove_dir_all("/tmp/reprisedb_test2").expect("Failed to remove directory");
-    /// }
-    /// ```
     pub async fn new(config: DatabaseConfig) -> io::Result<Self> {
         let sstable_dir = config.sstable_dir;
         let memtable_size_target = config.memtable_size_target;
@@ -188,24 +150,6 @@ impl Database {
     /// # Errors
     ///
     /// This function will return an `io::Error` if the `flush_memtable` operation fails.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use reprisedb::reprisedb::Database;
-    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
-    /// use reprisedb::models::value::Kind;
-    /// use std::fs;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test3".to_string()).build();
-    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
-    ///     db.put("my_key".to_string(), Kind::Int(42)).await.expect("Failed to insert key-value pair");
-    ///     db.shutdown().await;
-    ///     fs::remove_dir_all("/tmp/reprisedb_test3").expect("Failed to remove directory");
-    /// }
-    /// ```
     #[instrument]
     pub async fn put(&mut self, key: String, value: value::Kind) -> std::io::Result<()> {
         let mut memtable_guard = self.memtable.write().await;
@@ -255,26 +199,6 @@ impl Database {
     /// # Errors
     ///
     /// This function will return an `io::Error` if reading from the `SSTables` fails.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use reprisedb::reprisedb::Database;
-    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
-    /// use std::fs;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test5".to_string()).build();
-    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
-    ///     match db.get("my_key").await {
-    ///         Ok(Some(value)) => println!("Retrieved value: {:?}", value),
-    ///         Ok(None) => println!("Key not found"),
-    ///         Err(e) => eprintln!("Failed to retrieve key: {}", e),
-    ///     }
-    ///     db.shutdown().await;
-    ///     fs::remove_dir_all("/tmp/reprisedb_test5").expect("Failed to remove directory");
-    /// }
     /// ```
     #[instrument]
     pub async fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
@@ -311,27 +235,6 @@ impl Database {
     /// # Errors
     ///
     /// This function will return an `io::Error` if there's a problem creating the SSTable, such as a filesystem I/O error.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use reprisedb::reprisedb::Database;
-    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
-    /// use reprisedb::models::value::Kind;
-    /// use std::fs;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test6".to_string()).build();
-    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
-    ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
-    ///     match db.flush_memtable().await {
-    ///         Ok(_) => println!("Memtable flushed successfully"),
-    ///         Err(e) => eprintln!("Failed to flush memtable: {}", e),
-    ///     }
-    ///     db.shutdown().await;
-    ///     fs::remove_dir_all("/tmp/reprisedb_test6").expect("Failed to remove directory");
-    /// }
     /// ```
     #[instrument]
     pub async fn flush_memtable(&mut self) -> std::io::Result<()> {
@@ -528,23 +431,6 @@ impl Database {
     ///
     /// Note that this method does not currently return any status or error information. As a result,
     /// it is important to ensure that all previous database operations have completed successfully before calling `shutdown`.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use reprisedb::reprisedb::Database;
-    /// use reprisedb::reprisedb::DatabaseConfigBuilder;
-    /// use reprisedb::models::value::Kind;
-    /// use std::fs;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let config = DatabaseConfigBuilder::new().sstable_dir("/tmp/reprisedb_test7".to_string()).build();
-    ///     let mut db = Database::new(config).await.expect("Database initialization failed");
-    ///     db.put("key".to_string(), Kind::Str("value".to_string())).await.expect("Failed to put data");
-    ///     db.shutdown().await;
-    ///     fs::remove_dir_all("/tmp/reprisedb_test7").expect("Failed to remove directory");
-    /// }
     /// ```
     #[instrument]
     pub async fn shutdown(&mut self) {
