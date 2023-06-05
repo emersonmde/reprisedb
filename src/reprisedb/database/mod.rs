@@ -155,8 +155,8 @@ impl Database {
         let memtable_size = memtable_guard.size();
         if memtable_size > self.memtable_size_target {
             println!(
-                "Memtable size {} exceeded target {}. Flushing memtable.",
-                memtable_size, self.memtable_size_target
+                "Memtable size {} exceeded target {} with {} entries. Flushing memtable.",
+                memtable_size, self.memtable_size_target, memtable_guard.len().await
             );
             let snapshot = {
                 println!("Creating new MemTable and updating reference");
@@ -285,7 +285,7 @@ impl Database {
 
         // Get the length of sstables once and reuse it
         let len = sstables.len();
-        if len <= 1 {
+        if len < 2 {
             println!("No compaction needed");
             return Ok(());
         }
@@ -294,7 +294,7 @@ impl Database {
         // get_sstable_files returns files sorted by modified date, newest to oldest. Calling
         // reverse here will allow us to pop the newest file
         for i in (1..len).rev() {
-            println!("Start compaction");
+            println!("Start merge for compaction");
             let latest = sstables[i].clone();
             let second_latest = sstables[i - 1].clone();
             // let (latest, second_latest) = {

@@ -54,6 +54,10 @@ impl MemTable {
         self.size.load(Ordering::SeqCst)
     }
 
+    pub async fn len(&self) -> usize {
+        self.memtable.read().await.len()
+    }
+
     /// Clear the MemTable.
     pub async fn clear(&mut self) {
         self.memtable.write().await.clear();
