@@ -123,18 +123,18 @@ impl Database {
     /// This method starts a background task that periodically checks the size of the memtable and triggers
     /// compaction every 60 seconds.
     fn init(&self) {
-        let mut db_clone = self.clone();
-        tokio::spawn(async move {
-            let mut interval = interval(db_clone.compaction_interval);
-            loop {
-                interval.tick().await;
-                println!("Starting compaction process...");
-                match db_clone.start_compacting().await {
-                    Ok(_) => println!("Compaction completed."),
-                    Err(e) => eprintln!("Compaction failed: {:?}", e),
-                }
-            }
-        });
+        // let mut db_clone = self.clone();
+        // tokio::spawn(async move {
+        //     let mut interval = interval(db_clone.compaction_interval);
+        //     loop {
+        //         interval.tick().await;
+        //         println!("Starting compaction process...");
+        //         match db_clone.start_compacting().await {
+        //             Ok(_) => println!("Compaction completed."),
+        //             Err(e) => eprintln!("Compaction failed: {:?}", e),
+        //         }
+        //     }
+        // });
     }
 
     /// Inserts a key-value pair into the database.
@@ -292,6 +292,7 @@ impl Database {
 
         println!("Start merge for compaction");
         // Get two oldest SSTables
+        // TODO: Use id instead of index
         let latest = sstables_read_guard[1].clone();
         let second_latest = sstables_read_guard[0].clone();
         drop(sstables_read_guard);

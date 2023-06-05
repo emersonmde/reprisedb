@@ -17,13 +17,6 @@ RepriseDB's operation relies on two primary data structures:
 
 RepriseDB handles LSM Tree compaction using a merge strategy. When the number of `SSTable`s grows, a compaction process is initiated to prevent inefficiencies during key lookups. This process, managed by the `compact_sstables` method, merges the two most recent `SSTable`s into one, with a "last write wins" strategy for key collisions.
 
-In case of a compaction error, RepriseDB rolls back to the pre-compaction state, ensuring data consistency and integrity.
-
-## Code Overview
-
-- **database.rs**: The main interface of RepriseDB, manages data read/write operations and initiates compaction when required.
-- **sstable.rs**: Defines the `SSTable` structure and related operations, and includes an iterator for key-value pair traversal.
-
 ## Getting Started
 
 RepriseDB is still in development. For early experimentation, add this to your `Cargo.toml`:
@@ -34,31 +27,20 @@ reprisedb = { git = "https://github.com/emersonmde/reprisedb.git", branch = "mai
 ```
 
 ## Todo
-- Handle shutdown gracefully, stopping reads/writes before flushing
+- Speed up compaction using multiple workers
 - Add a write-ahead log to support crash recovery
     - Sequential writes to the log and MemTable simultaneously
     - When the MemTable is full, replace MemTable and log with new ones
         - Set to 4 KB
     - Trigger MemTable flush to disk, delete old MemTable and log
+- Handle shutdown gracefully, stopping reads/writes before flushing
+- Add multi-layer compaction strategy
+  - Change compaction to keep tiers of data based on modification date
+  - SSTables should stay below 64MB
 - Add an MANIFEST file for SSTables
-- Add a bloom filter for each of the SSTables and MemTable to speed up lookups
-- Add multi-layer compaction strategy to better support time series writes
 - Add API
-- Change compaction to keep tiers of data based on modification date
-  - These should stay below 64MB
-
-## Documentation
-
-Additional documentation for methods and structures is in progress.
-
-## Contributing
-
-Feedback and contributions are very welcome at this early stage of development. Please feel free to submit issues or open pull requests.
+- Sharding RwLocks on the MemTable or the SSTable vec for better performance
 
 ## License
 
 This project is licensed under the [MIT license](LICENSE).
-
-## Maintainer
-
-RepriseDB is developed and maintained by [Matthew Emerson](https://github.com/emersonmde).
