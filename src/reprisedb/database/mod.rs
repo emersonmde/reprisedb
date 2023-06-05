@@ -4,12 +4,13 @@ pub mod tests;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
+use std::io::Error;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
+use tokio::task::JoinHandle;
 
-use tokio::sync::Semaphore;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
 use tracing::instrument;
@@ -46,8 +47,6 @@ pub struct Database {
 
     pub sstables: Arc<RwLock<Vec<sstable::SSTable>>>,
     pub compacting_notify: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
-    // TODO: Limit reads in RwLock
-    pub get_semaphore: Arc<tokio::sync::Semaphore>,
 
     // Options
     pub sstable_dir: String,
@@ -106,9 +105,8 @@ impl Database {
 
         let database = Database {
             memtable,
-            sstables: Arc::new(RwLock::with_max_readers(sstables, config.max_reads as u32)),
+            sstables: Arc::new(RwLock::with_max_readers(sstables, num_concurrent_reads as u32)),
             compacting_notify: Arc::new(Mutex::new(None)),
-            get_semaphore: Arc::new(Semaphore::new(num_concurrent_reads)),
             sstable_dir: sstable_dir.clone(),
             memtable_size_target,
             compaction_interval,
@@ -208,10 +206,8 @@ impl Database {
         }
         drop(memtable_guard);
 
-        // let _permit = self.get_semaphore.acquire().await;
         let sstables = self.sstables.read().await;
         for sstable in sstables.iter().rev() {
-            // print!("Checking SSTable {:?} for key {}", sstable.path, key);
             if let Some(value) = sstable.get(key).await? {
                 return Ok(Some(value));
             }
@@ -237,7 +233,7 @@ impl Database {
     /// This function will return an `io::Error` if there's a problem creating the SSTable, such as a filesystem I/O error.
     /// ```
     #[instrument]
-    pub async fn flush_memtable(&mut self) -> std::io::Result<()> {
+    pub async fn flush_memtable(&mut self) -> Result<JoinHandle<Result<(), Error>>, Error> {
         println!("Flushing memtable");
         let mut memtable_guard = self.memtable.write().await;
         let snapshot = {
@@ -252,13 +248,14 @@ impl Database {
 
         println!("Snapshot complete, found {} entries", snapshot.len());
         println!("Creating SSTable from MemTable and writing to disk");
-        let (sstable, _) = sstable::SSTable::create(&self.sstable_dir, &snapshot).await?;
+        let (sstable, index_join_handle) = sstable::SSTable::create(&self.sstable_dir, &snapshot).await?;
 
+        
         println!("Updating SSTable list");
         self.sstables.write().await.push(sstable);
 
         println!("Finished flushing");
-        Ok(())
+        Ok(index_join_handle)
     }
 
     /// Initiates compaction of `SSTables` in the database.
@@ -288,6 +285,10 @@ impl Database {
 
         // Get the length of sstables once and reuse it
         let len = sstables.len();
+        if len <= 1 {
+            println!("No compaction needed");
+            return Ok(());
+        }
 
 
         // get_sstable_files returns files sorted by modified date, newest to oldest. Calling
@@ -469,7 +470,6 @@ impl Clone for Database {
             memtable: Arc::clone(&self.memtable),
             sstables: Arc::clone(&self.sstables),
             compacting_notify: Arc::clone(&self.compacting_notify),
-            get_semaphore: Arc::clone(&self.get_semaphore),
             sstable_dir: self.sstable_dir.clone(),
             memtable_size_target: self.memtable_size_target.clone(),
             compaction_interval: self.compaction_interval.clone(),

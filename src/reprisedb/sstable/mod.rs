@@ -43,6 +43,7 @@ pub struct SSTable {
     #[allow(dead_code)]
     size: u64,
     bloom_filter: Arc<RwLock<BloomBox>>,
+    #[allow(dead_code)]
     created_timestamp: Duration,
     header_size: u64,
 }
@@ -79,17 +80,17 @@ impl SSTable {
                 ))
             }
         };
-        println!("Header len: {}", len);
 
-        let bloom_filter = Arc::new(RwLock::new(metadata.bloom_filter));
         let sstable = SSTable {
             path: PathBuf::from(filename),
             index: Arc::new(RwLock::new(None)),
             size: fs_metadata.len(),
-            bloom_filter,
+            // bloom_filter,
+            bloom_filter: Arc::new(RwLock::new(metadata.bloom_filter)),
             // Load metadata from file
             created_timestamp: metadata.created_timestamp.clone(),
-            header_size: len,
+            // Include 8 bytes for the stored length of the metadata
+            header_size: len + 8,
         };
         Ok(sstable)
     }
@@ -111,6 +112,7 @@ impl SSTable {
         let created_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let filename = Self::get_new_filename(dir);
         let file = File::create(filename.clone()).await?;
+        println!("Created file: {}", filename);
         let mut writer = BufWriter::new(file);
         let mut size: u64 = 0;
         let mut bloom_filter = BloomBox::with_rate(0.01, 1 * 1024 * 1024);
@@ -137,7 +139,8 @@ impl SSTable {
             writer.write_all(&bytes).await?;
         }
 
-        let header_len = Self::rewrite_metadata(writer, size, &bloom_filter, metadata).await?;
+        let header_len = Self::update_metadata_and_flush(writer, size, &bloom_filter, metadata).await?;
+        println!("Written header len: {}", header_len);
 
         let sstable = SSTable {
             path: PathBuf::from(filename),
@@ -164,7 +167,8 @@ impl SSTable {
     /// found, or an error if the operation failed. The option will be None
     /// if the key was not found in the SSTable.
     pub async fn get(&self, key: &str) -> std::io::Result<Option<models::value::Kind>> {
-        let mut offset: u64 = 0;
+        let mut offset: u64 = self.header_size;
+        let mut is_index_hit = false;
         {
             let bloom_filter = self.bloom_filter.read().await;
             if !bloom_filter.contains(&key) {
@@ -174,6 +178,7 @@ impl SSTable {
         let index_opt = self.index.read().await;
         if let Some(index) = index_opt.as_ref() {
             if let Some(nearest_offset) = index.get_nearest_offset(key).await {
+                is_index_hit = true;
                 offset = nearest_offset
             }
         }
@@ -189,6 +194,10 @@ impl SSTable {
                 }
                 Err(e) => return Err(e),
             }
+        }
+
+        if is_index_hit {
+            println!("Index {:?}.index hit but key {} not found near {} in SSTable", &self.path, key, offset);
         }
 
         Ok(None)
@@ -221,13 +230,16 @@ impl SSTable {
 
         let filename = Self::get_new_filename(dir);
 
+        let created_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let file = File::create(&filename).await?;
         let mut writer = BufWriter::new(file);
+        writer.seek(SeekFrom::Start(0)).await?;
         println!("Created file {}", filename);
 
-
-
-        // TODO: Write header
+        // Write header
+        let mut size: u64 = 0;
+        let mut bloom_filter = BloomBox::with_rate(0.01, 1 * 1024 * 1024);
+        let metadata = Self::write_header(&mut writer, &filename, size, &bloom_filter, created_timestamp).await?;
 
         let mut kv1 = iter1.next().await;
         let mut kv2 = iter2.next().await;
@@ -235,25 +247,30 @@ impl SSTable {
             match (&kv1, &kv2) {
                 (Some(Ok((k1, v1))), Some(Ok((k2, v2)))) => match k1.cmp(k2) {
                     std::cmp::Ordering::Less => {
-                        Self::write_row(&mut writer, k1, v1).await?;
+                        bloom_filter.insert(k1);
+                        size += Self::write_row(&mut writer, k1, v1).await?;
                         kv1 = iter1.next().await;
                     }
                     std::cmp::Ordering::Greater => {
-                        Self::write_row(&mut writer, k2, v2).await?;
+                        bloom_filter.insert(k2);
+                        size += Self::write_row(&mut writer, k2, v2).await?;
                         kv2 = iter2.next().await;
                     }
                     std::cmp::Ordering::Equal => {
-                        Self::write_row(&mut writer, k1, v1).await?;
+                        bloom_filter.insert(k1);
+                        size += Self::write_row(&mut writer, k1, v1).await?;
                         kv1 = iter1.next().await;
                         kv2 = iter2.next().await;
                     }
                 },
                 (Some(Ok((k1, v1))), None) => {
-                    Self::write_row(&mut writer, k1, v1).await?;
+                    bloom_filter.insert(k1);
+                    size += Self::write_row(&mut writer, k1, v1).await?;
                     kv1 = iter1.next().await;
                 }
                 (None, Some(Ok((k2, v2)))) => {
-                    Self::write_row(&mut writer, k2, v2).await?;
+                    bloom_filter.insert(k2);
+                    size += Self::write_row(&mut writer, k2, v2).await?;
                     kv2 = iter2.next().await;
                 }
                 _ => break,
@@ -261,6 +278,8 @@ impl SSTable {
         }
 
         writer.flush().await?;
+        // Update size and bloomfilter in header
+        Self::update_metadata_and_flush(writer, size, &bloom_filter, metadata).await?;
 
         let sstable = SSTable::new(filename.as_str()).await?;
         // TODO: Retry index creation if it fails?
@@ -277,7 +296,7 @@ impl SSTable {
         writer: &mut BufWriter<File>,
         key: &str,
         value: &value::Kind,
-    ) -> io::Result<()> {
+    ) -> io::Result<u64> {
         let row = models::Row {
             key: key.to_string(),
             value: Some(models::Value {
@@ -293,7 +312,7 @@ impl SSTable {
         writer.write_all(&len.to_be_bytes()).await?;
         writer.write_all(&bytes).await?;
 
-        Ok(())
+        Ok(len)
     }
 
     /// Generates a new filename in the format of "{dir}/Ptimestamp}_{uuid}".
@@ -319,6 +338,7 @@ impl SSTable {
     }
 
     pub async fn iter(&self) -> io::Result<SSTableIter> {
+        println!("Using header size for iter: {}", self.header_size);
         self.iter_at_offset(self.header_size).await
     }
 
@@ -364,12 +384,12 @@ impl SSTable {
         let serialized_metadata = bincode::serialize(&metadata).unwrap();
         let metadata_buf= vec![0; serialized_metadata.len()];
         let metadata_len = serialized_metadata.len() as u64;
-        writer.write_all(&metadata_len.to_le_bytes()).await?;
+        writer.write_all(&metadata_len.to_be_bytes()).await?;
         writer.write_all(&metadata_buf).await?;
         Ok(metadata)
     }
 
-    async fn rewrite_metadata(mut writer: BufWriter<File>, size: u64, bloom_filter: &BloomBox, metadata: SSTableMetadata) -> Result<u64, io::Error> {
+    async fn update_metadata_and_flush(mut writer: BufWriter<File>, size: u64, bloom_filter: &BloomBox, metadata: SSTableMetadata) -> Result<u64, io::Error> {
         let metadata = SSTableMetadata {
             size,
             bloom_filter: bloom_filter.clone(),

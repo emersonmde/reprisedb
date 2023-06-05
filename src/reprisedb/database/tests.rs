@@ -74,12 +74,12 @@ mod tests {
     #[tokio::test]
     async fn test_get_item_after_memtable_flush() {
         let mut db = setup().await;
-        let test_value = value::Kind::Int(44);
+        let test_value = value::Kind::Str("value".to_string());
         db.put("test".to_string(), test_value.clone())
             .await
             .unwrap();
-        db.flush_memtable().await.unwrap();
-
+        let index_join_handle = db.flush_memtable().await.unwrap();
+        index_join_handle.await.unwrap().unwrap();
         assert_eq!(&db.get("test").await.unwrap().unwrap(), &test_value);
 
         teardown(db);
@@ -111,10 +111,7 @@ mod tests {
             let value = &db.get(&key).await.unwrap();
             if let Some(value) = value {
                 if value != &value::Kind::Int(i as i64) {
-                    println!("equal key: {}, value: {:?}", key, value);
                 }
-            } else {
-                println!("missing key: {}", key);
             }
             assert_eq!(
                 value.as_ref().unwrap(),
