@@ -283,32 +283,30 @@ impl Database {
         let sstables_backup = self.sstables.clone();
 
         // Get a read lock on self.sstables
-        let sstables_guard = self.sstables.read().await;
+        // let sstables_guard = self.sstables.read().await;
+        let mut sstables = self.sstables.write().await;
 
         // Get the length of sstables once and reuse it
-        let len = sstables_guard.len();
+        let len = sstables.len();
 
-        drop(sstables_guard);
 
         // get_sstable_files returns files sorted by modified date, newest to oldest. Calling
         // reverse here will allow us to pop the newest file
         for i in (1..len).rev() {
             println!("Start compaction");
-            let latest = {
-                let sstables_guard = self.sstables.read().await;
-                sstables_guard[i].clone()
-            };
-            let second_latest = {
-                let sstables_guard = self.sstables.read().await;
-                sstables_guard[i - 1].clone()
-            };
+            let latest = sstables[i].clone();
+            let second_latest = sstables[i - 1].clone();
+            // let (latest, second_latest) = {
+            //     let sstables_guard = self.sstables.read().await;
+            //     (sstables_guard[i].clone(), sstables_guard[i - 1].clone())
+            // };
 
             let result = {
                 // Merge creates a new SSTable from the two SSTables passed in favoring the latest
                 let merged = latest.merge(&second_latest, &self.sstable_dir).await?;
 
                 // Remove the old tables, add the new one
-                let mut sstables = self.sstables.write().await;
+                // let mut sstables = self.sstables.write().await;
                 sstables.pop();
                 sstables.pop();
                 sstables.push(merged);
@@ -338,14 +336,14 @@ impl Database {
                 Err(err) => {
                     println!("Compaction process failed, rolling back");
                     // Handle the error, perform rollback
-                    *self.sstables.write().await = sstables_backup.write().await.clone();
+                    *sstables = sstables_backup.write().await.clone();
                     println!("Compaction process failed, roll back complete");
                     return Err(err);
                 }
             }
         }
 
-        let remaining_len = self.sstables.read().await.len();
+        let remaining_len = sstables.len();
         println!(
             "Successfully completed compacting {} SSTables. {} SSTables remaining.",
             len - remaining_len,

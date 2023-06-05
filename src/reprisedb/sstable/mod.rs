@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 
 use prost::Message;
+use serde::{Deserialize, Serialize};
 use tokio::fs::{self, File};
-use tokio::io::{self, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
+use tokio::io::{self, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, SeekFrom, AsyncReadExt};
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
 use tokio::task::JoinHandle;
 use tracing::instrument;
@@ -19,6 +20,14 @@ use crate::reprisedb::index::SparseIndex;
 use self::iter::{AsyncIterator, SSTableIter};
 
 pub mod iter;
+
+#[derive(Serialize, Deserialize)]
+struct SSTableMetadata {
+    path: PathBuf,
+    size: u64,
+    bloom_filter: BloomBox,
+    created_timestamp: Duration,
+}
 
 /// Struct representing an SSTable (sorted-string table) which is a key-value
 /// storage format with each variable sized row prefixed by a u64 length.
@@ -34,6 +43,8 @@ pub struct SSTable {
     #[allow(dead_code)]
     size: u64,
     bloom_filter: Arc<RwLock<BloomBox>>,
+    created_timestamp: Duration,
+    header_size: u64,
 }
 
 impl SSTable {
@@ -48,27 +59,38 @@ impl SSTable {
     /// A result that will be an instance of SSTable  or error.
     #[instrument]
     pub async fn new(filename: &str) -> io::Result<Self> {
-        let metadata = fs::metadata(filename).await?;
-        let bloom_filter = Arc::new(RwLock::new(BloomBox::with_rate(0.01, 1 * 1024 * 1024)));
-        let bloom_filter_clone = Arc::clone(&bloom_filter);
+        let fs_metadata = fs::metadata(filename).await?;
+        let mut file = File::open(&filename).await?;
+        file.seek(SeekFrom::Start(0)).await?;
+
+        let mut len_buf = [0; 8];
+        file.read_exact(len_buf.as_mut()).await?;
+        let len = u64::from_be_bytes(len_buf);
+
+        let mut metadata_buf = vec![0; len as usize];
+        file.read_exact(&mut metadata_buf).await?;
+        let metadata: Result<SSTableMetadata, _> = bincode::deserialize(&metadata_buf);
+        let metadata = match metadata {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Unable to deserialize SSTable metadata",
+                ))
+            }
+        };
+        println!("Header len: {}", len);
+
+        let bloom_filter = Arc::new(RwLock::new(metadata.bloom_filter));
         let sstable = SSTable {
             path: PathBuf::from(filename),
             index: Arc::new(RwLock::new(None)),
-            size: metadata.len(),
+            size: fs_metadata.len(),
             bloom_filter,
+            // Load metadata from file
+            created_timestamp: metadata.created_timestamp.clone(),
+            header_size: len,
         };
-        let mut iter = sstable.iter().await?;
-        let mut bloom_filter_guard = bloom_filter_clone.write().await;
-        while let Some(item) = iter.next().await {
-            match item {
-                Ok((key, _)) => {
-                    bloom_filter_guard.insert(&key);
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-            }
-        }
         Ok(sstable)
     }
 
@@ -86,11 +108,14 @@ impl SSTable {
         dir: &str,
         snapshot: &BTreeMap<String, value::Kind>,
     ) -> io::Result<(Self, JoinHandle<io::Result<()>>)> {
+        let created_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let filename = Self::get_new_filename(dir);
         let file = File::create(filename.clone()).await?;
         let mut writer = BufWriter::new(file);
         let mut size: u64 = 0;
         let mut bloom_filter = BloomBox::with_rate(0.01, 1 * 1024 * 1024);
+
+        let metadata = Self::write_header(&mut writer, &filename, size, &bloom_filter, created_timestamp).await?;
 
         for (key, value) in snapshot {
             bloom_filter.insert(key);
@@ -112,12 +137,15 @@ impl SSTable {
             writer.write_all(&bytes).await?;
         }
 
-        writer.flush().await?;
+        let header_len = Self::rewrite_metadata(writer, size, &bloom_filter, metadata).await?;
+
         let sstable = SSTable {
             path: PathBuf::from(filename),
             index: Arc::new(RwLock::new(None)),
             size,
             bloom_filter: Arc::new(RwLock::new(bloom_filter)),
+            created_timestamp: created_timestamp,
+            header_size: header_len,
         };
 
         let index_future = sstable.create_index();
@@ -196,6 +224,10 @@ impl SSTable {
         let file = File::create(&filename).await?;
         let mut writer = BufWriter::new(file);
         println!("Created file {}", filename);
+
+
+
+        // TODO: Write header
 
         let mut kv1 = iter1.next().await;
         let mut kv2 = iter2.next().await;
@@ -287,7 +319,7 @@ impl SSTable {
     }
 
     pub async fn iter(&self) -> io::Result<SSTableIter> {
-        self.iter_at_offset(0).await
+        self.iter_at_offset(self.header_size).await
     }
 
     fn create_index(&self) -> JoinHandle<Result<(), io::Error>> {
@@ -320,4 +352,37 @@ impl SSTable {
             Ok(())
         })
     }
+
+    async fn write_header(writer: &mut BufWriter<File>, filename: &String, size: u64, bloom_filter: &BloomBox, created_timestamp: Duration, ) -> Result<SSTableMetadata, io::Error> {
+        let metadata = SSTableMetadata {
+            path: PathBuf::from(filename.clone()),
+            size,
+            // TODO: Avoid the clone?
+            bloom_filter: bloom_filter.clone(),
+            created_timestamp: created_timestamp,
+        };
+        let serialized_metadata = bincode::serialize(&metadata).unwrap();
+        let metadata_buf= vec![0; serialized_metadata.len()];
+        let metadata_len = serialized_metadata.len() as u64;
+        writer.write_all(&metadata_len.to_le_bytes()).await?;
+        writer.write_all(&metadata_buf).await?;
+        Ok(metadata)
+    }
+
+    async fn rewrite_metadata(mut writer: BufWriter<File>, size: u64, bloom_filter: &BloomBox, metadata: SSTableMetadata) -> Result<u64, io::Error> {
+        let metadata = SSTableMetadata {
+            size,
+            bloom_filter: bloom_filter.clone(),
+            ..metadata
+        };
+        let serialized_metadata = bincode::serialize(&metadata).unwrap();
+        let metadata_len = serialized_metadata.len() as u64;
+        writer.seek(SeekFrom::Start(0)).await?;
+        writer.write_all(&metadata_len.to_be_bytes()).await?;
+        writer.write_all(&serialized_metadata).await?;
+        writer.flush().await?;
+        // Include 8 bytes for the length of the metadata
+        Ok(serialized_metadata.len() as u64 + 8)
+    }
 }
+
