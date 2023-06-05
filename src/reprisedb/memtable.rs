@@ -2,7 +2,13 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 
 use crate::models::{value, ValueKindSize};
-use std::{collections::{BTreeMap}, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 /// MemTable is an in-memory data structure for storing key-value pairs.
 /// This struct is used as a write buffer in the LSM tree implementation.
@@ -29,7 +35,8 @@ impl MemTable {
     pub async fn put(&mut self, key: String, value: value::Kind) {
         let mut memtable = self.memtable.write().await;
         if !memtable.contains_key(&key) {
-            self.size.fetch_add(key.len() + value.size(), Ordering::SeqCst);
+            self.size
+                .fetch_add(key.len() + value.size(), Ordering::SeqCst);
             memtable.insert(key, value);
         }
     }

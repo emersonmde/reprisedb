@@ -1,17 +1,17 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bloombox::BloomBox;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, File};
-use tokio::io::{self, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, SeekFrom, AsyncReadExt};
+use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
 use tokio::task::JoinHandle;
 use tracing::instrument;
 use uuid::Uuid;
-use bloombox::BloomBox;
 
 use crate::models;
 use crate::models::value;
@@ -117,7 +117,14 @@ impl SSTable {
         let mut size: u64 = 0;
         let mut bloom_filter = BloomBox::with_rate(0.01, 1 * 1024 * 1024);
 
-        let metadata = Self::write_header(&mut writer, &filename, size, &bloom_filter, created_timestamp).await?;
+        let metadata = Self::write_header(
+            &mut writer,
+            &filename,
+            size,
+            &bloom_filter,
+            created_timestamp,
+        )
+        .await?;
 
         for (key, value) in snapshot {
             bloom_filter.insert(key);
@@ -139,9 +146,8 @@ impl SSTable {
             writer.write_all(&bytes).await?;
         }
 
-        let header_len = Self::update_metadata_and_flush(writer, size, &bloom_filter, metadata).await?;
-        println!("Written header len: {}", header_len);
-
+        let header_len =
+            Self::update_metadata_and_flush(writer, size, &bloom_filter, metadata).await?;
         let sstable = SSTable {
             path: PathBuf::from(filename),
             index: Arc::new(RwLock::new(None)),
@@ -197,7 +203,8 @@ impl SSTable {
         }
 
         if is_index_hit {
-            println!("Index {:?}.index hit but key {} not found near {} in SSTable", &self.path, key, offset);
+            // This means the bloom filter returned a false positive
+            // TODO: Record metrics
         }
 
         Ok(None)
@@ -239,7 +246,14 @@ impl SSTable {
         // Write header
         let mut size: u64 = 0;
         let mut bloom_filter = BloomBox::with_rate(0.01, 1 * 1024 * 1024);
-        let metadata = Self::write_header(&mut writer, &filename, size, &bloom_filter, created_timestamp).await?;
+        let metadata = Self::write_header(
+            &mut writer,
+            &filename,
+            size,
+            &bloom_filter,
+            created_timestamp,
+        )
+        .await?;
 
         let mut kv1 = iter1.next().await;
         let mut kv2 = iter2.next().await;
@@ -338,7 +352,6 @@ impl SSTable {
     }
 
     pub async fn iter(&self) -> io::Result<SSTableIter> {
-        println!("Using header size for iter: {}", self.header_size);
         self.iter_at_offset(self.header_size).await
     }
 
@@ -373,7 +386,13 @@ impl SSTable {
         })
     }
 
-    async fn write_header(writer: &mut BufWriter<File>, filename: &String, size: u64, bloom_filter: &BloomBox, created_timestamp: Duration, ) -> Result<SSTableMetadata, io::Error> {
+    async fn write_header(
+        writer: &mut BufWriter<File>,
+        filename: &String,
+        size: u64,
+        bloom_filter: &BloomBox,
+        created_timestamp: Duration,
+    ) -> Result<SSTableMetadata, io::Error> {
         let metadata = SSTableMetadata {
             path: PathBuf::from(filename.clone()),
             size,
@@ -382,14 +401,19 @@ impl SSTable {
             created_timestamp: created_timestamp,
         };
         let serialized_metadata = bincode::serialize(&metadata).unwrap();
-        let metadata_buf= vec![0; serialized_metadata.len()];
+        let metadata_buf = vec![0; serialized_metadata.len()];
         let metadata_len = serialized_metadata.len() as u64;
         writer.write_all(&metadata_len.to_be_bytes()).await?;
         writer.write_all(&metadata_buf).await?;
         Ok(metadata)
     }
 
-    async fn update_metadata_and_flush(mut writer: BufWriter<File>, size: u64, bloom_filter: &BloomBox, metadata: SSTableMetadata) -> Result<u64, io::Error> {
+    async fn update_metadata_and_flush(
+        mut writer: BufWriter<File>,
+        size: u64,
+        bloom_filter: &BloomBox,
+        metadata: SSTableMetadata,
+    ) -> Result<u64, io::Error> {
         let metadata = SSTableMetadata {
             size,
             bloom_filter: bloom_filter.clone(),
@@ -405,4 +429,3 @@ impl SSTable {
         Ok(serialized_metadata.len() as u64 + 8)
     }
 }
-

@@ -110,13 +110,9 @@ mod tests {
             let key = format!("key{}", i);
             let value = &db.get(&key).await.unwrap();
             if let Some(value) = value {
-                if value != &value::Kind::Int(i as i64) {
-                }
+                if value != &value::Kind::Int(i as i64) {}
             }
-            assert_eq!(
-                value.as_ref().unwrap(),
-                &value::Kind::Int(i as i64)
-            );
+            assert_eq!(value.as_ref().unwrap(), &value::Kind::Int(i as i64));
         }
 
         teardown(db);

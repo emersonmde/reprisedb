@@ -105,7 +105,10 @@ impl Database {
 
         let database = Database {
             memtable,
-            sstables: Arc::new(RwLock::with_max_readers(sstables, num_concurrent_reads as u32)),
+            sstables: Arc::new(RwLock::with_max_readers(
+                sstables,
+                num_concurrent_reads as u32,
+            )),
             compacting_notify: Arc::new(Mutex::new(None)),
             sstable_dir: sstable_dir.clone(),
             memtable_size_target,
@@ -156,7 +159,9 @@ impl Database {
         if memtable_size > self.memtable_size_target {
             println!(
                 "Memtable size {} exceeded target {} with {} entries. Flushing memtable.",
-                memtable_size, self.memtable_size_target, memtable_guard.len().await
+                memtable_size,
+                self.memtable_size_target,
+                memtable_guard.len().await
             );
             let snapshot = {
                 println!("Creating new MemTable and updating reference");
@@ -248,9 +253,9 @@ impl Database {
 
         println!("Snapshot complete, found {} entries", snapshot.len());
         println!("Creating SSTable from MemTable and writing to disk");
-        let (sstable, index_join_handle) = sstable::SSTable::create(&self.sstable_dir, &snapshot).await?;
+        let (sstable, index_join_handle) =
+            sstable::SSTable::create(&self.sstable_dir, &snapshot).await?;
 
-        
         println!("Updating SSTable list");
         self.sstables.write().await.push(sstable);
 
@@ -277,80 +282,59 @@ impl Database {
     /// This function will return an `io::Error` if any I/O operation fails during the process.
     pub async fn compact_sstables(&mut self) -> io::Result<()> {
         println!("Starting compact_sstables");
-        let sstables_backup = self.sstables.clone();
+        let sstables_read_guard = self.sstables.read().await;
 
-        // Get a read lock on self.sstables
-        // let sstables_guard = self.sstables.read().await;
-        let mut sstables = self.sstables.write().await;
-
-        // Get the length of sstables once and reuse it
-        let len = sstables.len();
+        let len = sstables_read_guard.len();
         if len < 2 {
             println!("No compaction needed");
             return Ok(());
         }
 
+        println!("Start merge for compaction");
+        // Get two oldest SSTables
+        let latest = sstables_read_guard[1].clone();
+        let second_latest = sstables_read_guard[0].clone();
+        drop(sstables_read_guard);
 
-        // get_sstable_files returns files sorted by modified date, newest to oldest. Calling
-        // reverse here will allow us to pop the newest file
-        for i in (1..len).rev() {
-            println!("Start merge for compaction");
-            let latest = sstables[i].clone();
-            let second_latest = sstables[i - 1].clone();
-            // let (latest, second_latest) = {
-            //     let sstables_guard = self.sstables.read().await;
-            //     (sstables_guard[i].clone(), sstables_guard[i - 1].clone())
-            // };
+        let result = {
+            // Merge creates a new SSTable from the two SSTables passed in favoring the latest
+            let merged = latest.merge(&second_latest, &self.sstable_dir).await?;
 
-            let result = {
-                // Merge creates a new SSTable from the two SSTables passed in favoring the latest
-                let merged = latest.merge(&second_latest, &self.sstable_dir).await?;
+            // Remove the old tables, add the new one
+            let mut sstables = self.sstables.write().await;
+            sstables[1] = merged;
+            sstables.remove(0);
+            Ok(())
+        };
 
-                // Remove the old tables, add the new one
-                // let mut sstables = self.sstables.write().await;
-                sstables.pop();
-                sstables.pop();
-                sstables.push(merged);
-                Ok(())
-            };
+        match result {
+            Ok(_) => {
+                println!("SSTables updated with new file, deleting old files");
+                // Delete the files associated with the two SSTables that were merged
+                fs::remove_file(&latest.path)?;
+                fs::remove_file(&second_latest.path)?;
 
-            match result {
-                Ok(_) => {
-                    println!("SSTables updated with new file, deleting old files");
-                    // Delete the files associated with the two SSTables that were merged
-                    fs::remove_file(&latest.path)?;
-                    fs::remove_file(&second_latest.path)?;
-
-                    let mut latest_index_handle = latest.index.write().await;
-                    if let Some(_) = latest_index_handle.as_ref() {
-                        *latest_index_handle = None;
-                        let index_file_path = SparseIndex::get_index_filename(&latest.path)?;
-                        fs::remove_file(index_file_path)?;
-                    }
-                    let mut second_latest_index_handle = second_latest.index.write().await;
-                    if let Some(_) = second_latest_index_handle.as_ref() {
-                        *second_latest_index_handle = None;
-                        let index_file_path = SparseIndex::get_index_filename(&second_latest.path)?;
-                        fs::remove_file(index_file_path)?;
-                    }
+                let mut latest_index_handle = latest.index.write().await;
+                if let Some(_) = latest_index_handle.as_ref() {
+                    *latest_index_handle = None;
+                    let index_file_path = SparseIndex::get_index_filename(&latest.path)?;
+                    fs::remove_file(index_file_path)?;
                 }
-                Err(err) => {
-                    println!("Compaction process failed, rolling back");
-                    // Handle the error, perform rollback
-                    *sstables = sstables_backup.write().await.clone();
-                    println!("Compaction process failed, roll back complete");
-                    return Err(err);
+                let mut second_latest_index_handle = second_latest.index.write().await;
+                if let Some(_) = second_latest_index_handle.as_ref() {
+                    *second_latest_index_handle = None;
+                    let index_file_path = SparseIndex::get_index_filename(&second_latest.path)?;
+                    fs::remove_file(index_file_path)?;
                 }
+            }
+            Err(err) => {
+                println!("Compaction process failed, need to roll back");
+                // TODO: Handle the error, perform rollback
+                return Err(err);
             }
         }
 
-        let remaining_len = sstables.len();
-        println!(
-            "Successfully completed compacting {} SSTables. {} SSTables remaining.",
-            len - remaining_len,
-            remaining_len
-        );
-
+        println!("Finished compact_sstables");
         Ok(())
     }
 
@@ -390,19 +374,34 @@ impl Database {
 
         println!("Spawning compaction process");
         tokio::spawn(async move {
-            let result = db_clone.compact_sstables().await;
-            if let Err(e) = &result {
-                eprintln!("Failed to compact sstables: {}", e);
+            let mut num_sstables = {
+                let sstables = db_clone.sstables.read().await;
+                sstables.len()
+            };
+
+            while num_sstables > 2 {
+                println!("Continuing compaction process for {} tables", num_sstables);
+                let result = db_clone.compact_sstables().await;
+                if let Err(e) = &result {
+                    eprintln!("Failed to compact sstables: {}", e);
+                    return;
+                }
+
+                num_sstables = {
+                    let sstables = db_clone.sstables.read().await;
+                    sstables.len()
+                };
             }
-            println!("SSTable compaction completed successfully");
+
             notify_clone.notify_one();
+            println!(
+                "SSTable compaction completed successfully. SSTables left: {}",
+                db_clone.sstables.read().await.len()
+            );
 
             // Reset compacting_notify after compaction is done
             let mut compacting_notify_guard = db_clone.compacting_notify.lock().await;
             *compacting_notify_guard = None;
-            drop(compacting_notify_guard);
-
-            result
         });
 
         Ok(())
