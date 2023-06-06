@@ -12,7 +12,8 @@ use std::time::SystemTime;
 use tokio::task::JoinHandle;
 
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{interval, Duration};
+use tokio::time::Duration;
+use tokio::time::interval;
 use tracing::instrument;
 
 use crate::models::value;
@@ -123,18 +124,18 @@ impl Database {
     /// This method starts a background task that periodically checks the size of the memtable and triggers
     /// compaction every 60 seconds.
     fn init(&self) {
-        // let mut db_clone = self.clone();
-        // tokio::spawn(async move {
-        //     let mut interval = interval(db_clone.compaction_interval);
-        //     loop {
-        //         interval.tick().await;
-        //         println!("Starting compaction process...");
-        //         match db_clone.start_compacting().await {
-        //             Ok(_) => println!("Compaction completed."),
-        //             Err(e) => eprintln!("Compaction failed: {:?}", e),
-        //         }
-        //     }
-        // });
+        let mut db_clone = self.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(db_clone.compaction_interval);
+            loop {
+                interval.tick().await;
+                println!("Starting compaction process...");
+                match db_clone.start_compacting().await {
+                    Ok(_) => println!("Compaction completed."),
+                    Err(e) => eprintln!("Compaction failed: {:?}", e),
+                }
+            }
+        });
     }
 
     /// Inserts a key-value pair into the database.

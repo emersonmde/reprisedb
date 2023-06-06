@@ -21,6 +21,9 @@ use self::iter::{AsyncIterator, SSTableIter};
 
 pub mod iter;
 
+const BLOOM_FILTER_NUM_ITEMS: usize = 250_000;
+const BLOOM_FILTER_FP_RATE: f64 = 0.01;
+
 #[derive(Serialize, Deserialize)]
 struct SSTableMetadata {
     path: PathBuf,
@@ -115,7 +118,7 @@ impl SSTable {
         println!("Created file: {}", filename);
         let mut writer = BufWriter::new(file);
         let mut size: u64 = 0;
-        let mut bloom_filter = BloomBox::with_rate(0.01, 1 * 1024 * 1024);
+        let mut bloom_filter = BloomBox::with_rate(BLOOM_FILTER_FP_RATE, BLOOM_FILTER_NUM_ITEMS);
 
         let metadata = Self::write_header(
             &mut writer,
@@ -245,7 +248,7 @@ impl SSTable {
 
         // Write header
         let mut size: u64 = 0;
-        let mut bloom_filter = BloomBox::with_rate(0.01, 1 * 1024 * 1024);
+        let mut bloom_filter = BloomBox::with_rate(BLOOM_FILTER_FP_RATE, BLOOM_FILTER_NUM_ITEMS);
         let metadata = Self::write_header(
             &mut writer,
             &filename,
