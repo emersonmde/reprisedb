@@ -34,10 +34,11 @@ impl MemTable {
     /// * `value` - The value to insert.
     pub async fn put(&mut self, key: String, value: value::Kind) {
         let mut memtable = self.memtable.write().await;
-        if !memtable.contains_key(&key) {
+        let len = &key.len();
+        if let std::collections::btree_map::Entry::Vacant(e) = memtable.entry(key) {
             self.size
-                .fetch_add(key.len() + value.size(), Ordering::SeqCst);
-            memtable.insert(key, value);
+                .fetch_add(len + value.size(), Ordering::SeqCst);
+            e.insert(value);
         }
     }
 

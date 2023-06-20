@@ -27,10 +27,7 @@ pub trait AsyncIterator {
 impl AsyncIterator for SSTableIter {
     type Item = io::Result<(String, models::value::Kind)>;
     async fn next(&mut self) -> Option<Self::Item> {
-        match self.next_with_offset().await {
-            Some((_, item)) => Some(item),
-            None => None,
-        }
+        self.next_with_offset().await.map(|(_, item)| item)
     }
 
     async fn next_with_offset(&mut self) -> Option<(u64, Self::Item)> {

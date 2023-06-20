@@ -88,7 +88,7 @@ impl Database {
         for path in Self::get_files_by_modified_date(&sstable_dir)?
             .iter()
             .filter(|file| {
-                file.is_file() && !(file.extension().unwrap_or(OsStr::new("")) == "index")
+                file.is_file() && file.extension().unwrap_or(OsStr::new("")) != "index"
             })
             .rev()
         {
@@ -208,7 +208,7 @@ impl Database {
     pub async fn get(&self, key: &str) -> io::Result<Option<value::Kind>> {
         let memtable_guard = self.memtable.read().await;
         if let Some(value) = memtable_guard.get(key).await {
-            return Ok(Some(value.clone()));
+            return Ok(Some(value));
         }
         drop(memtable_guard);
 
@@ -317,13 +317,13 @@ impl Database {
                 fs::remove_file(&second_latest.path)?;
 
                 let mut latest_index_handle = latest.index.write().await;
-                if let Some(_) = latest_index_handle.as_ref() {
+                if latest_index_handle.as_ref().is_some() {
                     *latest_index_handle = None;
                     let index_file_path = SparseIndex::get_index_filename(&latest.path)?;
                     fs::remove_file(index_file_path)?;
                 }
                 let mut second_latest_index_handle = second_latest.index.write().await;
-                if let Some(_) = second_latest_index_handle.as_ref() {
+                if second_latest_index_handle.as_ref().is_some() {
                     *second_latest_index_handle = None;
                     let index_file_path = SparseIndex::get_index_filename(&second_latest.path)?;
                     fs::remove_file(index_file_path)?;
@@ -472,8 +472,8 @@ impl Clone for Database {
             sstables: Arc::clone(&self.sstables),
             compacting_notify: Arc::clone(&self.compacting_notify),
             sstable_dir: self.sstable_dir.clone(),
-            memtable_size_target: self.memtable_size_target.clone(),
-            compaction_interval: self.compaction_interval.clone(),
+            memtable_size_target: self.memtable_size_target,
+            compaction_interval: self.compaction_interval,
         }
     }
 }

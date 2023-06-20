@@ -91,7 +91,7 @@ impl SSTable {
             // bloom_filter,
             bloom_filter: Arc::new(RwLock::new(metadata.bloom_filter)),
             // Load metadata from file
-            created_timestamp: metadata.created_timestamp.clone(),
+            created_timestamp: metadata.created_timestamp,
             // Include 8 bytes for the stored length of the metadata
             header_size: len + 8,
         };
@@ -156,7 +156,7 @@ impl SSTable {
             index: Arc::new(RwLock::new(None)),
             size,
             bloom_filter: Arc::new(RwLock::new(bloom_filter)),
-            created_timestamp: created_timestamp,
+            created_timestamp,
             header_size: header_len,
         };
 
@@ -401,7 +401,7 @@ impl SSTable {
             size,
             // TODO: Avoid the clone?
             bloom_filter: bloom_filter.clone(),
-            created_timestamp: created_timestamp,
+            created_timestamp,
         };
         let serialized_metadata = bincode::serialize(&metadata).unwrap();
         let metadata_buf = vec![0; serialized_metadata.len()];
