@@ -36,8 +36,7 @@ impl MemTable {
         let mut memtable = self.memtable.write().await;
         let len = &key.len();
         if let std::collections::btree_map::Entry::Vacant(e) = memtable.entry(key) {
-            self.size
-                .fetch_add(len + value.size(), Ordering::SeqCst);
+            self.size.fetch_add(len + value.size(), Ordering::SeqCst);
             e.insert(value);
         }
     }

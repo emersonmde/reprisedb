@@ -12,8 +12,8 @@ use std::time::SystemTime;
 use tokio::task::JoinHandle;
 
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::Duration;
 use tokio::time::interval;
+use tokio::time::Duration;
 use tracing::instrument;
 
 use crate::models::value;
@@ -87,9 +87,7 @@ impl Database {
         let mut sstables = Vec::new();
         for path in Self::get_files_by_modified_date(&sstable_dir)?
             .iter()
-            .filter(|file| {
-                file.is_file() && file.extension().unwrap_or(OsStr::new("")) != "index"
-            })
+            .filter(|file| file.is_file() && file.extension().unwrap_or(OsStr::new("")) != "index")
             .rev()
         {
             let os_path_str = path.clone().into_os_string();
